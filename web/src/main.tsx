@@ -23,6 +23,9 @@ import "./styles.css";
 const apiBase = window.localStorage.getItem("csvRepairApiBase") || "http://127.0.0.1:8787";
 const githubUrl = "https://github.com/SimpleZion/csv-repair-workbench";
 const localWorkbenchUrl = new URL("/", apiBase).toString();
+const formStorageKey = "csvRepairWorkbenchForm";
+const formSchemaVersionKey = "csvRepairWorkbenchFormVersion";
+const currentFormSchemaVersion = "2";
 
 type LocalNetworkRequestInit = RequestInit & { targetAddressSpace?: "loopback" | "local" };
 
@@ -142,7 +145,7 @@ const defaultForm: FormState = {
   exclude_dir: "",
   expected_columns: "",
   all_quoted: "auto",
-  workers: "4",
+  workers: "8",
   max_examples: "20",
   progress_every: "25",
   iterations: "1",
@@ -173,6 +176,7 @@ const messages = {
     inputCsv: "Input CSV",
     chooseCsv: "Choose CSV",
     chooseFolder: "Choose folder",
+    choosingFolder: "Choosing",
     folderPickerFailed: "Folder picker failed",
     uploadCsv: "Upload CSV",
     uploadingCsv: "Uploading CSV",
@@ -357,6 +361,7 @@ const messages = {
     inputCsv: "输入 CSV",
     chooseCsv: "选择 CSV",
     chooseFolder: "选择文件夹",
+    choosingFolder: "正在选择",
     folderPickerFailed: "选择文件夹失败",
     uploadCsv: "上传 CSV",
     uploadingCsv: "正在上传 CSV",
@@ -545,6 +550,7 @@ function App() {
   const [uploadMessage, setUploadMessage] = useState("");
   const [previewingRepairPath, setPreviewingRepairPath] = useState("");
   const [apiConnectionError, setApiConnectionError] = useState("");
+  const [directoryPickingField, setDirectoryPickingField] = useState<"root_path" | "output_dir" | "">("");
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const selectedRun = runs.find((run) => run.job_id === selectedRunId) ?? runs[0];
   const text = messages[language];
@@ -558,7 +564,8 @@ function App() {
   }, []);
 
   useEffect(() => {
-    window.localStorage.setItem("csvRepairWorkbenchForm", JSON.stringify(form));
+    window.localStorage.setItem(formStorageKey, JSON.stringify(form));
+    window.localStorage.setItem(formSchemaVersionKey, currentFormSchemaVersion);
   }, [form]);
 
   function toggleLanguage() {
@@ -616,7 +623,7 @@ function App() {
       exclude_dir: splitLines(form.exclude_dir),
       expected_columns: expectedColumnsValue(form.expected_columns),
       all_quoted: form.all_quoted,
-      workers: positiveIntegerValue(form.workers, 4),
+      workers: positiveIntegerValue(form.workers, 8),
       max_examples: positiveIntegerValue(form.max_examples, 20),
       progress_every: positiveIntegerValue(form.progress_every, 25),
       iterations: positiveIntegerValue(form.iterations, 1),
@@ -654,6 +661,7 @@ function App() {
   async function chooseDirectory(field: "root_path" | "output_dir") {
     const title = field === "root_path" ? text.rootDirectory : text.outputDirectory;
     const initialDirectory = field === "root_path" ? form.root_path : form.output_dir;
+    setDirectoryPickingField(field);
     try {
       const response = await apiFetch(`${apiBase}/api/pick-directory`, {
         method: "POST",
@@ -676,6 +684,8 @@ function App() {
       setApiConnectionError("");
     } catch (error) {
       setApiConnectionError(`${text.folderPickerFailed}: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setDirectoryPickingField("");
     }
   }
 
@@ -836,7 +846,7 @@ function App() {
       exclude_dir: listValue(request.exclude_dir),
       expected_columns: nullableNumberValue(request.expected_columns),
       all_quoted: allQuotedValue(request.all_quoted),
-      workers: numberValue(request.workers, positiveIntegerValue(form.workers, 4)),
+      workers: numberValue(request.workers, positiveIntegerValue(form.workers, 8)),
       max_examples: numberValue(request.max_examples, positiveIntegerValue(form.max_examples, 20)),
       progress_every: numberValue(request.progress_every, positiveIntegerValue(form.progress_every, 25)),
       log_all_issues: false,
@@ -1105,9 +1115,9 @@ function App() {
                 <LabelText label={text.rootDirectory} badge={fields.inputPath ? text.optional : text.required} help={text.rootDirectoryHelp} />
                 <div className="input-action-row">
                   <input value={form.root_path} onChange={(event) => updateForm(setForm, "root_path", event.target.value)} placeholder={text.rootDirectoryExample} />
-                  <button className="secondary-action" type="button" onClick={() => void chooseDirectory("root_path")}>
+                  <button className="secondary-action" type="button" onClick={() => void chooseDirectory("root_path")} disabled={directoryPickingField !== ""}>
                     <FolderOpen size={15} />
-                    {text.chooseFolder}
+                    {directoryPickingField === "root_path" ? text.choosingFolder : text.chooseFolder}
                   </button>
                 </div>
                 <FieldHelp>{text.rootDirectoryHelp}</FieldHelp>
@@ -1125,9 +1135,9 @@ function App() {
                 <LabelText label={text.outputDirectory} badge={text.optional} help={text.outputDirectoryHelp} />
                 <div className="input-action-row">
                   <input value={form.output_dir} onChange={(event) => updateForm(setForm, "output_dir", event.target.value)} placeholder={text.outputDirectoryExample} />
-                  <button className="secondary-action" type="button" onClick={() => void chooseDirectory("output_dir")}>
+                  <button className="secondary-action" type="button" onClick={() => void chooseDirectory("output_dir")} disabled={directoryPickingField !== ""}>
                     <FolderOpen size={15} />
-                    {text.chooseFolder}
+                    {directoryPickingField === "output_dir" ? text.choosingFolder : text.chooseFolder}
                   </button>
                 </div>
                 <FieldHelp>{text.outputDirectoryHelp}</FieldHelp>
@@ -2495,11 +2505,15 @@ function formatProgressRatio(progress: RunProgress) {
 
 function loadInitialForm() {
   try {
-    const saved = window.localStorage.getItem("csvRepairWorkbenchForm");
+    const saved = window.localStorage.getItem(formStorageKey);
+    const savedVersion = window.localStorage.getItem(formSchemaVersionKey);
     if (!saved) {
       return defaultForm;
     }
     const loaded = { ...defaultForm, ...JSON.parse(saved) } as FormState;
+    if (savedVersion !== currentFormSchemaVersion && String(loaded.workers ?? "") === "4") {
+      loaded.workers = defaultForm.workers;
+    }
     return {
       ...loaded,
       workers: String(loaded.workers ?? defaultForm.workers),

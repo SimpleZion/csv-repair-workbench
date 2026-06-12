@@ -131,7 +131,7 @@ class RunRequest(BaseModel):
     exclude_dir: list[str] = Field(default_factory=list)
     expected_columns: int | None = None
     all_quoted: Literal["auto", "true", "false"] = "auto"
-    workers: int = 4
+    workers: int = 8
     max_examples: int = 20
     progress_every: int = 25
     iterations: int = 1
@@ -656,24 +656,58 @@ def open_windows_directory_picker(title: str, initial_directory: str) -> str:
     script = r"""
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public static class CsvRepairWindow {
+    [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+    [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+}
+"@
+[System.Windows.Forms.Application]::EnableVisualStyles()
 $dialog = New-Object System.Windows.Forms.FolderBrowserDialog
 $dialog.Description = $env:CSV_REPAIR_PICKER_TITLE
 $dialog.ShowNewFolderButton = $true
 if ($env:CSV_REPAIR_PICKER_INITIAL -and (Test-Path -LiteralPath $env:CSV_REPAIR_PICKER_INITIAL)) {
     $dialog.SelectedPath = $env:CSV_REPAIR_PICKER_INITIAL
 }
-$result = $dialog.ShowDialog()
-if ($result -eq [System.Windows.Forms.DialogResult]::OK) {
-    Write-Output $dialog.SelectedPath
+$owner = New-Object System.Windows.Forms.Form
+$owner.Text = $env:CSV_REPAIR_PICKER_TITLE
+$owner.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterScreen
+$owner.Size = New-Object System.Drawing.Size(1, 1)
+$owner.ShowInTaskbar = $false
+$owner.TopMost = $true
+$owner.Opacity = 0.01
+try {
+    $owner.Show()
+    $owner.Activate()
+    $owner.BringToFront()
+    [CsvRepairWindow]::ShowWindow($owner.Handle, 5) | Out-Null
+    [CsvRepairWindow]::SetForegroundWindow($owner.Handle) | Out-Null
+    $result = $dialog.ShowDialog($owner)
+    if ($result -eq [System.Windows.Forms.DialogResult]::OK) {
+        Write-Output $dialog.SelectedPath
+    }
+} finally {
+    $dialog.Dispose()
+    $owner.Close()
+    $owner.Dispose()
 }
 """
+    startup_info = None
+    if os.name == "nt":
+        startup_info = subprocess.STARTUPINFO()
+        startup_info.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startup_info.wShowWindow = 1
     process = subprocess.run(
-        ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-STA", "-Command", script],
+        ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Normal", "-STA", "-Command", script],
         capture_output=True,
         text=True,
         encoding="utf-8",
         errors="replace",
         env=environment,
+        startupinfo=startup_info,
         timeout=3600,
     )
     if process.returncode != 0:
