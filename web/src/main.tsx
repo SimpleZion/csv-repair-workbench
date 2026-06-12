@@ -21,6 +21,7 @@ import "./styles.css";
 
 const apiBase = window.localStorage.getItem("csvRepairApiBase") || "http://127.0.0.1:8787";
 const githubUrl = "https://github.com/SimpleZion/csv-repair-workbench";
+const localWorkbenchUrl = new URL("/", apiBase).toString();
 
 type LocalNetworkRequestInit = RequestInit & { targetAddressSpace?: "loopback" | "local" };
 
@@ -287,6 +288,7 @@ const messages = {
     repairActions: "Repair actions",
     selectedFileMissing: "Select an issue/change row that contains a Path field first.",
     localApiBlocked: "The hosted UI needs access to the local API at 127.0.0.1:8787. If the browser asks for local network access, allow it.",
+    openLocalWorkbench: "Open local workbench",
     reconnectLocalApi: "Reconnect local API",
     excludeFiles: "Exclude files or path globs",
     excludeDirectories: "Exclude directories",
@@ -509,7 +511,8 @@ const messages = {
     repairScanScope: "修复本次扫描范围",
     repairActions: "修复操作",
     selectedFileMissing: "请先选择一行包含 Path 字段的问题或修改记录。",
-    localApiBlocked: "线上 UI 需要访问本机 127.0.0.1:8787 API。浏览器如果弹出本地网络访问授权，请选择允许。",
+    localApiBlocked: "线上 UI 无法直接访问本机 127.0.0.1:8787 API。请打开本地工作台；同源运行后不需要浏览器授权。",
+    openLocalWorkbench: "打开本地工作台",
     reconnectLocalApi: "重新连接本地 API",
     language: "English",
   },
@@ -1020,7 +1023,10 @@ function App() {
               <strong>{text.localApiBlocked}</strong>
               <span>{apiConnectionError}</span>
             </div>
-            <button type="button" onClick={() => void refreshRuns()}>{text.reconnectLocalApi}</button>
+            <div className="api-warning-actions">
+              <button type="button" className="primary" onClick={() => { window.location.href = localWorkbenchUrl; }}>{text.openLocalWorkbench}</button>
+              <button type="button" onClick={() => void refreshRuns()}>{text.reconnectLocalApi}</button>
+            </div>
           </section>
         )}
 

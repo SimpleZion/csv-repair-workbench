@@ -184,6 +184,18 @@ h1 {
   font-weight: 700;
 }
 
+.api-warning-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.api-warning button.primary {
+  color: #ffffff;
+  background: #b45309;
+}
+
 .content-grid {
   display: grid;
   grid-template-columns: 360px minmax(0, 1fr);

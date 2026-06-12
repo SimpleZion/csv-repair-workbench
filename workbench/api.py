@@ -13,6 +13,8 @@ from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 
@@ -40,6 +42,17 @@ def find_engine_project(root: Path) -> Path:
     return candidates[0]
 
 
+def find_web_dist(root: Path) -> Path:
+    candidates = [
+        root / "tools" / "CsvRepairWorkbench" / "web" / "dist",
+        root / "web" / "dist",
+    ]
+    for candidate in candidates:
+        if (candidate / "index.html").exists():
+            return candidate
+    return candidates[0]
+
+
 def allowed_origins() -> list[str]:
     configured_origins = os.environ.get("CSV_REPAIR_ALLOWED_ORIGINS", "")
     values = [
@@ -53,6 +66,7 @@ def allowed_origins() -> list[str]:
 workspace_root = find_workspace_root()
 engine_project = find_engine_project(workspace_root)
 engine_dll = engine_project.parent / "bin" / "Release" / "net8.0" / "CsvRepairKit.dll"
+web_dist = find_web_dist(workspace_root)
 workbench_output_dir = Path(os.environ.get("CSV_REPAIR_OUTPUT_DIR", workspace_root / "outputs" / "csv_repair_workbench")).resolve()
 jobs_dir = workbench_output_dir / "jobs"
 locks_dir = workbench_output_dir / "locks"
@@ -69,6 +83,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+if (web_dist / "assets").exists():
+    app.mount("/assets", StaticFiles(directory=web_dist / "assets"), name="assets")
 
 
 @app.middleware("http")
@@ -838,6 +854,37 @@ def is_known_job_artifact(path: Path) -> bool:
 
 def is_path_inside(path: Path, directory: Path) -> bool:
     return path == directory or directory in path.parents
+
+
+@app.get("/")
+def serve_workbench_index():
+    return serve_workbench_file("index.html")
+
+
+@app.get("/{path:path}")
+def serve_workbench_path(path: str):
+    if path.startswith("api/"):
+        raise HTTPException(status_code=404, detail="api route not found")
+    return serve_workbench_file(path or "index.html")
+
+
+def serve_workbench_file(path: str):
+    index_path = web_dist / "index.html"
+    if not index_path.exists():
+        return HTMLResponse(
+            "<!doctype html><title>CsvRepairWorkbench</title>"
+            "<main style='font-family:system-ui;padding:24px'>"
+            "<h1>CsvRepairWorkbench local API is running</h1>"
+            "<p>The local web UI has not been built yet. Run <code>npm --prefix web install</code> "
+            "and <code>npm --prefix web run build</code>, or use <code>scripts/start-web.ps1</code>.</p>"
+            "</main>",
+            status_code=200,
+        )
+    requested_path = (web_dist / path).resolve()
+    web_root = web_dist.resolve()
+    if (requested_path == web_root or web_root in requested_path.parents) and requested_path.exists() and requested_path.is_file():
+        return FileResponse(requested_path)
+    return FileResponse(index_path)
 
 
 def now_text() -> str:
