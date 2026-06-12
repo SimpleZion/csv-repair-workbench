@@ -237,7 +237,7 @@ const messages = {
     excludeFilesHelp: "One pattern per line. Matches file names or paths, for example temporary exports or backup CSVs.",
     excludeDirectoriesHelp: "One pattern per line. Skips matching subdirectories during recursive batch scan/repair.",
     inputCsvExample: "samples\\malformed.csv",
-    rootDirectoryExample: "D:\\Data\\csv_exports",
+    rootDirectoryExample: "<your-csv-folder>",
     outputFileExample: "outputs\\csv_repair_workbench\\malformed_repaired.csv",
     outputDirectoryExample: "outputs\\csv_repair_workbench",
     reportFileExample: "outputs\\csv_repair_workbench\\repair_report.json",
@@ -264,9 +264,9 @@ const messages = {
     fileGroups: "Files with issues",
     fileGroupHint: "Issue logs open as a file list first. Select one file to inspect its issue rows.",
     currentFileIssues: "Current file issues",
-    repairPreviewChanges: "Repair change preview",
+    repairPreviewChanges: "Estimated repair preview",
     previewRepairChanges: "Instant repair preview",
-    previewRepairChangesHint: "Builds a fast before/after preview from the current scan rows without rewriting the CSV.",
+    previewRepairChangesHint: "Builds an estimated before/after preview from current scan rows without rewriting the CSV.",
     previewRepairBusy: "Building preview",
     showFileIssues: "View issues",
     issueTypeSummary: "Issue types",
@@ -321,7 +321,7 @@ const messages = {
     repairedContext: "Repaired context",
     beforeToken: "Before",
     afterToken: "After",
-    projectedPreview: "Projected repair",
+    projectedPreview: "Estimated repair",
     repairedContextMissing: "Only repair change logs include repaired context.",
     openJsonlFirst: "Open a JSONL artifact and select a row.",
     originalBytes: "Original bytes",
@@ -401,7 +401,7 @@ const messages = {
     repairedContext: "修复后上下文",
     beforeToken: "修改前",
     afterToken: "修改后",
-    projectedPreview: "预计修复",
+    projectedPreview: "估算修复",
     repairedContextMissing: "只有修复修改日志包含修复后上下文。",
     openJsonlFirst: "请先打开 JSONL 产物并选择一行。",
     originalBytes: "原始字节",
@@ -460,7 +460,7 @@ const messages = {
     excludeFilesHelp: "用于指定要排除的文件名或路径通配模式，一行一个。",
     excludeDirectoriesHelp: "用于指定递归批量任务中要跳过的子目录，一行一个。",
     inputCsvExample: "samples\\malformed.csv",
-    rootDirectoryExample: "D:\\Data\\csv_exports",
+    rootDirectoryExample: "<your-csv-folder>",
     outputFileExample: "outputs\\csv_repair_workbench\\malformed_repaired.csv",
     outputDirectoryExample: "outputs\\csv_repair_workbench",
     reportFileExample: "outputs\\csv_repair_workbench\\repair_report.json",
@@ -487,9 +487,9 @@ const messages = {
     fileGroups: "问题文件",
     fileGroupHint: "问题日志会先按文件分组。选择某个文件后，再查看该文件的具体问题行。",
     currentFileIssues: "当前文件问题",
-    repairPreviewChanges: "修复修改预览",
+    repairPreviewChanges: "估算修复预览",
     previewRepairChanges: "即时预览修复点",
-    previewRepairChangesHint: "基于当前扫描结果立即生成修复前后对比，不重写完整 CSV。",
+    previewRepairChangesHint: "基于当前扫描结果立即生成估算修复前后对比，不重写完整 CSV。",
     previewRepairBusy: "正在生成预览",
     showFileIssues: "查看问题",
     issueTypeSummary: "问题类型",
@@ -752,6 +752,15 @@ function App() {
   }
 
   async function repairIssueFiles(groups: JsonlGroup[]) {
+    if (selectedRun?.request?.command === "scan" && (stringValue(selectedRun.request.root_path) || stringValue(selectedRun.request.input_path))) {
+      await startRun(buildRepairBodyFromRun(selectedRun));
+      setViewerRows([{ message: `${text.repairJobsStarted}: 1` }]);
+      setViewerGroups([]);
+      setViewerPathFilter("");
+      setSelectedAuditIndex(0);
+      setPreviewOpen(true);
+      return;
+    }
     const paths = groups.map((group) => group.path).filter(Boolean);
     for (const path of paths) {
       await startRun(buildRepairBodyFromRun(selectedRun, {

@@ -59,11 +59,11 @@ internal static class CsvShared
       benchmark Measure scan/repair/validate throughput on a fixed input.
 
     Repair example:
-      dotnet run --project tools/CsvRepairKit -- repair --input input.csv --output outputs/input.clean.csv
+      dotnet run --project engine/CsvRepairKit -- repair --input input.csv --output outputs/input.clean.csv
 
     Batch examples:
-      dotnet run --project tools/CsvRepairKit -- scan --root D:\Data --output-dir outputs\csv_scan --exclude-dir backup --log-all-issues
-      dotnet run --project tools/CsvRepairKit -- repair --root D:\Data --output-dir outputs\csv_fixed --exclude *.bak.csv --log-all-changes
+      dotnet run --project engine/CsvRepairKit -- scan --root <your-csv-folder> --output-dir outputs\csv_scan --exclude-dir backup --log-all-issues
+      dotnet run --project engine/CsvRepairKit -- repair --root <your-csv-folder> --output-dir outputs\csv_fixed --exclude *.bak.csv --log-all-changes
 
     Important options:
       --input PATH              Input CSV file.

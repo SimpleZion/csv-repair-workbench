@@ -45,7 +45,6 @@ def allowed_origins() -> list[str]:
     values = [
         "http://127.0.0.1:5173",
         "http://localhost:5173",
-        "https://csv-repair.simplezion.com",
     ]
     values.extend(origin.strip() for origin in configured_origins.split(",") if origin.strip())
     return sorted(set(values))
@@ -123,15 +122,6 @@ class RunRequest(BaseModel):
     log_all_changes: bool = False
     validate_after_repair: bool = True
     write_bom: bool = False
-
-
-class RepairPreviewRequest(BaseModel):
-    input_path: str
-    expected_columns: int | None = None
-    all_quoted: Literal["auto", "true", "false"] = "auto"
-    max_examples: int = 20
-    write_bom: bool = False
-    limit: int = Field(default=200, ge=1, le=1000)
 
 
 @app.on_event("startup")
@@ -243,73 +233,6 @@ async def upload_csv(request: Request, filename: str = Query(..., min_length=1))
         "path": str(output_path),
         "filename": Path(filename).name,
         "size_bytes": size_bytes,
-    }
-
-
-@app.post("/api/repair-preview")
-def create_repair_preview(request: RepairPreviewRequest) -> dict[str, Any]:
-    ensure_engine()
-    input_path = resolve_for_compare(request.input_path)
-    if not input_path.exists() or not input_path.is_file():
-        raise HTTPException(status_code=404, detail="input CSV not found")
-    preview_id = f"{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:12]}"
-    preview_dir = workbench_output_dir / "repair_preview" / preview_id
-    preview_dir.mkdir(parents=True, exist_ok=False)
-    suffix = input_path.suffix or ".csv"
-    output_path = preview_dir / f"{safe_output_stem(input_path.stem)}_preview_repaired{suffix}"
-    report_path = preview_dir / "repair_preview_report.json"
-    change_log_path = preview_dir / "repair_preview_changes.jsonl"
-    command = [
-        "dotnet",
-        str(engine_dll),
-        "repair",
-        "--input",
-        str(input_path),
-        "--output",
-        str(output_path),
-        "--report",
-        str(report_path),
-        "--change-log",
-        str(change_log_path),
-        "--log-all-changes",
-        "--all-quoted",
-        request.all_quoted,
-        "--max-examples",
-        str(max(1, request.max_examples)),
-        "--no-validate",
-    ]
-    if request.expected_columns is not None:
-        command.extend(["--expected-columns", str(request.expected_columns)])
-    if request.write_bom:
-        command.append("--write-bom")
-    started = time.perf_counter()
-    process = subprocess.run(
-        command,
-        cwd=workspace_root,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        capture_output=True,
-    )
-    elapsed_seconds = round(time.perf_counter() - started, 3)
-    payload = parse_engine_payload(process.stdout)
-    rows, next_offset, has_more = read_jsonl_rows(change_log_path, limit=request.limit, offset=0)
-    return {
-        "ok": process.returncode == 0,
-        "status": "ok" if process.returncode == 0 else "issue",
-        "input_path": str(input_path),
-        "output_path": str(output_path),
-        "report_path": str(report_path),
-        "change_log_path": str(change_log_path),
-        "return_code": process.returncode,
-        "elapsed_seconds": elapsed_seconds,
-        "payload": payload,
-        "rows": rows,
-        "offset": 0,
-        "next_offset": next_offset,
-        "has_more": has_more,
-        "stdout": process.stdout[:8000],
-        "stderr": process.stderr[:8000],
     }
 
 

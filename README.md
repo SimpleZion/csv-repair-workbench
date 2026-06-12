@@ -71,3 +71,11 @@ dotnet .\engine\CsvRepairKit\bin\Release\net8.0\CsvRepairKit.dll validate --inpu
 
 The web UI is static and can be deployed to Cloudflare Pages or any static host. File scanning and repair require the local FastAPI service because browsers cannot directly read arbitrary local folders.
 
+By default, the local API only allows local development origins such as `http://127.0.0.1:5173`. If you intentionally use the hosted UI with a local API, start the API with an explicit origin allowlist:
+
+```powershell
+$env:CSV_REPAIR_ALLOWED_ORIGINS = "https://csv-repair.simplezion.com"
+.\scripts\start-api.ps1
+```
+
+Modern Chrome and Edge may also ask for local network or loopback access when a hosted HTTPS page talks to `127.0.0.1`. Grant that permission only for a hosted UI you trust.
