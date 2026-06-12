@@ -1,3 +1,2 @@
 /*
-  Permissions-Policy: local-network=(self), loopback-network=(self)
-
+  Permissions-Policy: local-network-access=(self), local-network=(self), loopback-network=(self)
