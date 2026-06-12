@@ -655,45 +655,117 @@ def open_windows_directory_picker(title: str, initial_directory: str) -> str:
     environment["CSV_REPAIR_PICKER_INITIAL"] = initial_directory
     script = r"""
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-Add-Type -AssemblyName System.Windows.Forms
-Add-Type -AssemblyName System.Drawing
 Add-Type @"
 using System;
 using System.Runtime.InteropServices;
-public static class CsvRepairWindow {
-    [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
-    [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+
+public static class CsvRepairFolderDialog {
+    private const uint FosPickFolders = 0x00000020;
+    private const uint FosForceFileSystem = 0x00000040;
+    private const uint FosNoChangeDir = 0x00000008;
+    private const uint FosPathMustExist = 0x00000800;
+    private const uint SigdnFileSystemPath = 0x80058000;
+    private const int ErrorCancelled = unchecked((int)0x800704C7);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetForegroundWindow();
+
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode, PreserveSig = false)]
+    private static extern void SHCreateItemFromParsingName(
+        [MarshalAs(UnmanagedType.LPWStr)] string path,
+        IntPtr bindContext,
+        [MarshalAs(UnmanagedType.LPStruct)] Guid interfaceId,
+        [MarshalAs(UnmanagedType.Interface)] out IShellItem shellItem);
+
+    [ComImport]
+    [Guid("DC1C5A9C-E88A-4DDE-A5A1-60F82A20AEF7")]
+    private class FileOpenDialog {
+    }
+
+    [ComImport]
+    [Guid("42F85136-DB7E-439C-85F1-E4075D135FC8")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface IFileDialog {
+        [PreserveSig] int Show(IntPtr parent);
+        void SetFileTypes(uint fileTypes, IntPtr filterSpec);
+        void SetFileTypeIndex(uint fileType);
+        void GetFileTypeIndex(out uint fileType);
+        void Advise(IntPtr events, out uint cookie);
+        void Unadvise(uint cookie);
+        void SetOptions(uint options);
+        void GetOptions(out uint options);
+        void SetDefaultFolder(IShellItem shellItem);
+        void SetFolder(IShellItem shellItem);
+        void GetFolder(out IShellItem shellItem);
+        void GetCurrentSelection(out IShellItem shellItem);
+        void SetFileName([MarshalAs(UnmanagedType.LPWStr)] string fileName);
+        void GetFileName(out IntPtr fileName);
+        void SetTitle([MarshalAs(UnmanagedType.LPWStr)] string title);
+        void SetOkButtonLabel([MarshalAs(UnmanagedType.LPWStr)] string text);
+        void SetFileNameLabel([MarshalAs(UnmanagedType.LPWStr)] string label);
+        void GetResult(out IShellItem shellItem);
+        void AddPlace(IShellItem shellItem, int fileDialogAddPlace);
+        void SetDefaultExtension([MarshalAs(UnmanagedType.LPWStr)] string defaultExtension);
+        void Close(int result);
+        void SetClientGuid(ref Guid guid);
+        void ClearClientData();
+        void SetFilter(IntPtr filter);
+    }
+
+    [ComImport]
+    [Guid("43826d1e-e718-42ee-bc55-a1e261c37bfe")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface IShellItem {
+        void BindToHandler(IntPtr bindContext, ref Guid handlerId, ref Guid interfaceId, out IntPtr result);
+        void GetParent(out IShellItem shellItem);
+        void GetDisplayName(uint nameType, out IntPtr name);
+        void GetAttributes(uint attributeMask, out uint attributes);
+        void Compare(IShellItem shellItem, uint hint, out int order);
+    }
+
+    public static string PickFolder(string title, string initialDirectory) {
+        var dialog = (IFileDialog)new FileOpenDialog();
+        uint options;
+        dialog.GetOptions(out options);
+        dialog.SetOptions(options | FosPickFolders | FosForceFileSystem | FosNoChangeDir | FosPathMustExist);
+        if (!String.IsNullOrWhiteSpace(title)) {
+            dialog.SetTitle(title);
+        }
+        if (!String.IsNullOrWhiteSpace(initialDirectory)) {
+            TrySetInitialDirectory(dialog, initialDirectory);
+        }
+
+        int result = dialog.Show(GetForegroundWindow());
+        if (result == ErrorCancelled) {
+            return "";
+        }
+        if (result != 0) {
+            Marshal.ThrowExceptionForHR(result);
+        }
+
+        IShellItem selectedItem;
+        dialog.GetResult(out selectedItem);
+        IntPtr selectedPathPointer;
+        selectedItem.GetDisplayName(SigdnFileSystemPath, out selectedPathPointer);
+        try {
+            return Marshal.PtrToStringUni(selectedPathPointer) ?? "";
+        } finally {
+            Marshal.FreeCoTaskMem(selectedPathPointer);
+        }
+    }
+
+    private static void TrySetInitialDirectory(IFileDialog dialog, string initialDirectory) {
+        try {
+            IShellItem initialItem;
+            SHCreateItemFromParsingName(initialDirectory, IntPtr.Zero, typeof(IShellItem).GUID, out initialItem);
+            dialog.SetDefaultFolder(initialItem);
+            dialog.SetFolder(initialItem);
+        } catch {
+        }
+    }
 }
 "@
-[System.Windows.Forms.Application]::EnableVisualStyles()
-$dialog = New-Object System.Windows.Forms.FolderBrowserDialog
-$dialog.Description = $env:CSV_REPAIR_PICKER_TITLE
-$dialog.ShowNewFolderButton = $true
-if ($env:CSV_REPAIR_PICKER_INITIAL -and (Test-Path -LiteralPath $env:CSV_REPAIR_PICKER_INITIAL)) {
-    $dialog.SelectedPath = $env:CSV_REPAIR_PICKER_INITIAL
-}
-$owner = New-Object System.Windows.Forms.Form
-$owner.Text = $env:CSV_REPAIR_PICKER_TITLE
-$owner.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterScreen
-$owner.Size = New-Object System.Drawing.Size(1, 1)
-$owner.ShowInTaskbar = $false
-$owner.TopMost = $true
-$owner.Opacity = 0.01
-try {
-    $owner.Show()
-    $owner.Activate()
-    $owner.BringToFront()
-    [CsvRepairWindow]::ShowWindow($owner.Handle, 5) | Out-Null
-    [CsvRepairWindow]::SetForegroundWindow($owner.Handle) | Out-Null
-    $result = $dialog.ShowDialog($owner)
-    if ($result -eq [System.Windows.Forms.DialogResult]::OK) {
-        Write-Output $dialog.SelectedPath
-    }
-} finally {
-    $dialog.Dispose()
-    $owner.Close()
-    $owner.Dispose()
-}
+[CsvRepairFolderDialog]::PickFolder($env:CSV_REPAIR_PICKER_TITLE, $env:CSV_REPAIR_PICKER_INITIAL)
 """
     startup_info = None
     if os.name == "nt":
