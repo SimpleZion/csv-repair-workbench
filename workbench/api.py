@@ -115,6 +115,7 @@ jobs: dict[str, dict[str, Any]] = {}
 jobs_lock = threading.Lock()
 reserved_output_paths: dict[str, str] = {}
 reserved_output_paths_lock = threading.Lock()
+directory_picker_lock = threading.Lock()
 
 
 class RunRequest(BaseModel):
@@ -138,6 +139,11 @@ class RunRequest(BaseModel):
     log_all_changes: bool = False
     validate_after_repair: bool = True
     write_bom: bool = False
+
+
+class DirectoryPickerRequest(BaseModel):
+    title: str = "Select folder"
+    initial_directory: str = ""
 
 
 @app.on_event("startup")
@@ -250,6 +256,17 @@ async def upload_csv(request: Request, filename: str = Query(..., min_length=1))
         "filename": Path(filename).name,
         "size_bytes": size_bytes,
     }
+
+
+@app.post("/api/pick-directory")
+def pick_directory(request: DirectoryPickerRequest) -> dict[str, Any]:
+    try:
+        selected_path = open_directory_picker(request.title, request.initial_directory)
+    except subprocess.TimeoutExpired as error:
+        raise HTTPException(status_code=408, detail="folder picker timed out") from error
+    except Exception as error:
+        raise HTTPException(status_code=500, detail=f"folder picker failed: {error}") from error
+    return {"ok": bool(selected_path), "path": selected_path}
 
 
 @app.get("/api/jsonl")
@@ -603,6 +620,86 @@ def safe_upload_filename(filename: str) -> str:
     if not safe or safe in {".", ".."}:
         safe = "upload.csv"
     return safe
+
+
+def existing_initial_directory(initial_directory: str) -> str:
+    value = initial_directory.strip()
+    if not value:
+        return ""
+    try:
+        path = Path(value)
+        if not path.is_absolute():
+            path = workspace_root / path
+        resolved_path = path.resolve()
+    except Exception:
+        return ""
+    if resolved_path.is_file():
+        return str(resolved_path.parent)
+    if resolved_path.is_dir():
+        return str(resolved_path)
+    return ""
+
+
+def open_directory_picker(title: str, initial_directory: str) -> str:
+    clean_title = title.strip() or "Select folder"
+    clean_initial_directory = existing_initial_directory(initial_directory)
+    with directory_picker_lock:
+        if os.name == "nt":
+            return open_windows_directory_picker(clean_title, clean_initial_directory)
+        return open_tk_directory_picker(clean_title, clean_initial_directory)
+
+
+def open_windows_directory_picker(title: str, initial_directory: str) -> str:
+    environment = os.environ.copy()
+    environment["CSV_REPAIR_PICKER_TITLE"] = title
+    environment["CSV_REPAIR_PICKER_INITIAL"] = initial_directory
+    script = r"""
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+Add-Type -AssemblyName System.Windows.Forms
+$dialog = New-Object System.Windows.Forms.FolderBrowserDialog
+$dialog.Description = $env:CSV_REPAIR_PICKER_TITLE
+$dialog.ShowNewFolderButton = $true
+if ($env:CSV_REPAIR_PICKER_INITIAL -and (Test-Path -LiteralPath $env:CSV_REPAIR_PICKER_INITIAL)) {
+    $dialog.SelectedPath = $env:CSV_REPAIR_PICKER_INITIAL
+}
+$result = $dialog.ShowDialog()
+if ($result -eq [System.Windows.Forms.DialogResult]::OK) {
+    Write-Output $dialog.SelectedPath
+}
+"""
+    process = subprocess.run(
+        ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-STA", "-Command", script],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        env=environment,
+        timeout=3600,
+    )
+    if process.returncode != 0:
+        message = process.stderr.strip() or process.stdout.strip() or "Windows folder picker returned a non-zero exit code"
+        raise RuntimeError(message)
+    output = process.stdout.strip()
+    if not output:
+        return ""
+    return output.splitlines()[-1].strip()
+
+
+def open_tk_directory_picker(title: str, initial_directory: str) -> str:
+    import tkinter as tk
+    from tkinter import filedialog
+
+    root = tk.Tk()
+    root.withdraw()
+    root.attributes("-topmost", True)
+    try:
+        options: dict[str, Any] = {"title": title, "mustexist": False, "parent": root}
+        if initial_directory:
+            options["initialdir"] = initial_directory
+        selected_path = filedialog.askdirectory(**options)
+        return str(selected_path or "").strip()
+    finally:
+        root.destroy()
 
 
 def safe_output_stem(stem: str) -> str:

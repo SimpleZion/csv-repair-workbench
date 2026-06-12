@@ -7,6 +7,7 @@ import {
   ClipboardList,
   Database,
   FileSearch,
+  FolderOpen,
   Gauge,
   Github,
   GitCompare,
@@ -171,6 +172,8 @@ const messages = {
     benchmarkHint: "Fill Input CSV. Iterations controls repeated benchmark runs.",
     inputCsv: "Input CSV",
     chooseCsv: "Choose CSV",
+    chooseFolder: "Choose folder",
+    folderPickerFailed: "Folder picker failed",
     uploadCsv: "Upload CSV",
     uploadingCsv: "Uploading CSV",
     uploadedCsv: "Uploaded and filled Input CSV",
@@ -353,6 +356,8 @@ const messages = {
     benchmarkHint: "填写“输入 CSV”；迭代次数用于重复跑性能测试。",
     inputCsv: "输入 CSV",
     chooseCsv: "选择 CSV",
+    chooseFolder: "选择文件夹",
+    folderPickerFailed: "选择文件夹失败",
     uploadCsv: "上传 CSV",
     uploadingCsv: "正在上传 CSV",
     uploadedCsv: "已上传并填入输入 CSV",
@@ -644,6 +649,34 @@ function App() {
 
   function chooseInputCsv() {
     fileInputRef.current?.click();
+  }
+
+  async function chooseDirectory(field: "root_path" | "output_dir") {
+    const title = field === "root_path" ? text.rootDirectory : text.outputDirectory;
+    const initialDirectory = field === "root_path" ? form.root_path : form.output_dir;
+    try {
+      const response = await apiFetch(`${apiBase}/api/pick-directory`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          title,
+          initial_directory: initialDirectory,
+        }),
+      });
+      if (!response.ok) {
+        throw new Error(await response.text());
+      }
+      const payload = await response.json();
+      const selectedPath = String(payload.path ?? "");
+      if (selectedPath) {
+        updateForm(setForm, field, selectedPath);
+      }
+      setApiConnectionError("");
+    } catch (error) {
+      setApiConnectionError(`${text.folderPickerFailed}: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 
   function handleInputCsvFileChange(event: React.ChangeEvent<HTMLInputElement>) {
@@ -1070,7 +1103,13 @@ function App() {
             {fields.rootPath && (
               <label>
                 <LabelText label={text.rootDirectory} badge={fields.inputPath ? text.optional : text.required} help={text.rootDirectoryHelp} />
-                <input value={form.root_path} onChange={(event) => updateForm(setForm, "root_path", event.target.value)} placeholder={text.rootDirectoryExample} />
+                <div className="input-action-row">
+                  <input value={form.root_path} onChange={(event) => updateForm(setForm, "root_path", event.target.value)} placeholder={text.rootDirectoryExample} />
+                  <button className="secondary-action" type="button" onClick={() => void chooseDirectory("root_path")}>
+                    <FolderOpen size={15} />
+                    {text.chooseFolder}
+                  </button>
+                </div>
                 <FieldHelp>{text.rootDirectoryHelp}</FieldHelp>
               </label>
             )}
@@ -1084,7 +1123,13 @@ function App() {
             {fields.outputDirectory && (
               <label>
                 <LabelText label={text.outputDirectory} badge={text.optional} help={text.outputDirectoryHelp} />
-                <input value={form.output_dir} onChange={(event) => updateForm(setForm, "output_dir", event.target.value)} placeholder={text.outputDirectoryExample} />
+                <div className="input-action-row">
+                  <input value={form.output_dir} onChange={(event) => updateForm(setForm, "output_dir", event.target.value)} placeholder={text.outputDirectoryExample} />
+                  <button className="secondary-action" type="button" onClick={() => void chooseDirectory("output_dir")}>
+                    <FolderOpen size={15} />
+                    {text.chooseFolder}
+                  </button>
+                </div>
                 <FieldHelp>{text.outputDirectoryHelp}</FieldHelp>
               </label>
             )}
