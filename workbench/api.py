@@ -4,6 +4,7 @@ import json
 import csv
 import hashlib
 import os
+import re
 import subprocess
 import threading
 import time
@@ -58,9 +59,18 @@ def allowed_origins() -> list[str]:
     values = [
         "http://127.0.0.1:5173",
         "http://localhost:5173",
+        "https://csv-repair.simplezion.com",
+        "https://csv-repair-workbench.pages.dev",
     ]
     values.extend(origin.strip() for origin in configured_origins.split(",") if origin.strip())
     return sorted(set(values))
+
+
+allowed_origin_regex = r"https://[a-z0-9-]+\.csv-repair-workbench\.pages\.dev"
+
+
+def is_allowed_origin(origin: str) -> bool:
+    return origin in allowed_origins() or re.fullmatch(allowed_origin_regex, origin) is not None
 
 
 workspace_root = find_workspace_root()
@@ -79,6 +89,7 @@ app = FastAPI(title="CsvRepairWorkbench API", version="0.1.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins(),
+    allow_origin_regex=allowed_origin_regex,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -92,7 +103,7 @@ async def add_private_network_access_header(request: Request, call_next):
     origin = request.headers.get("origin", "")
     if (
         request.method == "OPTIONS"
-        and origin in allowed_origins()
+        and is_allowed_origin(origin)
         and request.headers.get("access-control-request-private-network") == "true"
     ):
         return Response(
