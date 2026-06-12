@@ -1,0 +1,28 @@
+{
+  "name": "csv-repair-workbench",
+  "version": "0.1.0",
+  "type": "module",
+  "private": false,
+  "homepage": "https://csv-repair.simplezion.com",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/SimpleZion/csv-repair-workbench.git"
+  },
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "tsc && vite build",
+    "preview": "vite preview --host 127.0.0.1"
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "^4.3.4",
+    "lucide-react": "^0.561.0",
+    "react": "^19.2.1",
+    "react-dom": "^19.2.1",
+    "typescript": "^5.9.3",
+    "vite": "^6.0.11"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3"
+  }
+}

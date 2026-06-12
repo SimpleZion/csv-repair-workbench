@@ -1,0 +1,12 @@
+bin/
+obj/
+node_modules/
+dist/
+__pycache__/
+*.pyc
+.venv/
+outputs/
+.env
+.env.*
+!.env.example
+
