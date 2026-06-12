@@ -149,6 +149,41 @@ h1 {
   text-overflow: ellipsis;
 }
 
+.api-warning {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+  padding: 12px 14px;
+  border: 1px solid #f59e0b;
+  border-radius: 8px;
+  color: #78350f;
+  background: #fffbeb;
+}
+
+.api-warning div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.api-warning span {
+  color: #92400e;
+  font-size: 12px;
+  word-break: break-word;
+}
+
+.api-warning button {
+  flex: 0 0 auto;
+  border: 1px solid #d97706;
+  border-radius: 8px;
+  padding: 8px 10px;
+  color: #78350f;
+  background: #ffffff;
+  font-weight: 700;
+}
+
 .content-grid {
   display: grid;
   grid-template-columns: 360px minmax(0, 1fr);

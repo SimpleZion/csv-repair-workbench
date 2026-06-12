@@ -286,6 +286,8 @@ const messages = {
     repairScanScope: "Repair this scan scope",
     repairActions: "Repair actions",
     selectedFileMissing: "Select an issue/change row that contains a Path field first.",
+    localApiBlocked: "The hosted UI needs access to the local API at 127.0.0.1:8787. If the browser asks for local network access, allow it.",
+    reconnectLocalApi: "Reconnect local API",
     excludeFiles: "Exclude files or path globs",
     excludeDirectories: "Exclude directories",
     logIssues: "Log issues",
@@ -507,6 +509,8 @@ const messages = {
     repairScanScope: "修复本次扫描范围",
     repairActions: "修复操作",
     selectedFileMissing: "请先选择一行包含 Path 字段的问题或修改记录。",
+    localApiBlocked: "线上 UI 需要访问本机 127.0.0.1:8787 API。浏览器如果弹出本地网络访问授权，请选择允许。",
+    reconnectLocalApi: "重新连接本地 API",
     language: "English",
   },
 } satisfies Record<Language, Record<string, string>>;
@@ -532,6 +536,7 @@ function App() {
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [uploadMessage, setUploadMessage] = useState("");
   const [previewingRepairPath, setPreviewingRepairPath] = useState("");
+  const [apiConnectionError, setApiConnectionError] = useState("");
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const selectedRun = runs.find((run) => run.job_id === selectedRunId) ?? runs[0];
   const text = messages[language];
@@ -561,9 +566,17 @@ function App() {
   }
 
   async function refreshRuns() {
-    const response = await apiFetch(`${apiBase}/api/runs`);
-    const payload = await response.json();
-    setRuns(payload.runs ?? []);
+    try {
+      const response = await apiFetch(`${apiBase}/api/runs`);
+      if (!response.ok) {
+        throw new Error(await response.text());
+      }
+      const payload = await response.json();
+      setRuns(payload.runs ?? []);
+      setApiConnectionError("");
+    } catch (error) {
+      setApiConnectionError(error instanceof Error ? error.message : String(error));
+    }
   }
 
   async function selectRun(jobId: string) {
@@ -992,6 +1005,15 @@ function App() {
             </div>
           ))}
         </section>
+        {apiConnectionError && (
+          <section className="api-warning">
+            <div>
+              <strong>{text.localApiBlocked}</strong>
+              <span>{apiConnectionError}</span>
+            </div>
+            <button type="button" onClick={() => void refreshRuns()}>{text.reconnectLocalApi}</button>
+          </section>
+        )}
 
         <section className="content-grid">
           <form className="run-panel" onSubmit={submitRun}>
