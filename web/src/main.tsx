@@ -22,6 +22,25 @@ import "./styles.css";
 const apiBase = window.localStorage.getItem("csvRepairApiBase") || "http://127.0.0.1:8787";
 const githubUrl = "https://github.com/SimpleZion/csv-repair-workbench";
 
+type LocalNetworkRequestInit = RequestInit & { targetAddressSpace?: "loopback" | "local" };
+
+function apiFetch(input: string, init: RequestInit = {}) {
+  const nextInit: LocalNetworkRequestInit = { ...init };
+  if (isLoopbackUrl(input)) {
+    nextInit.targetAddressSpace = "loopback";
+  }
+  return fetch(input, nextInit);
+}
+
+function isLoopbackUrl(input: string) {
+  try {
+    const url = new URL(input);
+    return url.hostname === "127.0.0.1" || url.hostname === "localhost" || url.hostname === "[::1]" || url.hostname === "::1";
+  } catch {
+    return false;
+  }
+}
+
 type Command = "scan" | "repair" | "validate" | "audit" | "benchmark";
 type Language = "zh" | "en";
 
@@ -542,7 +561,7 @@ function App() {
   }
 
   async function refreshRuns() {
-    const response = await fetch(`${apiBase}/api/runs`);
+    const response = await apiFetch(`${apiBase}/api/runs`);
     const payload = await response.json();
     setRuns(payload.runs ?? []);
   }
@@ -589,7 +608,7 @@ function App() {
   }
 
   async function startRun(body: Record<string, unknown>) {
-    const response = await fetch(`${apiBase}/api/runs`, {
+    const response = await apiFetch(`${apiBase}/api/runs`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -620,10 +639,10 @@ function App() {
   }
 
   async function uploadInputCsv(file: File) {
-    setUploadProgress(0);
+    setUploadProgress(null);
     setUploadMessage(`${text.uploadingCsv}: ${file.name}`);
     try {
-      const payload = await uploadCsvFile(file, (percent) => setUploadProgress(percent));
+      const payload = await uploadCsvFile(file);
       setForm((previous) => ({
         ...previous,
         input_path: String(payload.path ?? ""),
@@ -637,30 +656,18 @@ function App() {
     }
   }
 
-  function uploadCsvFile(file: File, onProgress: (percent: number) => void): Promise<Record<string, unknown>> {
-    return new Promise((resolve, reject) => {
-      const request = new XMLHttpRequest();
-      request.open("POST", `${apiBase}/api/uploads/csv?filename=${encodeURIComponent(file.name)}`);
-      request.setRequestHeader("Content-Type", "application/octet-stream");
-      request.upload.onprogress = (event) => {
-        if (event.lengthComputable && event.total > 0) {
-          onProgress(Math.round((event.loaded / event.total) * 100));
-        }
-      };
-      request.onload = () => {
-        if (request.status < 200 || request.status >= 300) {
-          reject(new Error(request.responseText || `HTTP ${request.status}`));
-          return;
-        }
-        try {
-          resolve(JSON.parse(request.responseText));
-        } catch (error) {
-          reject(error);
-        }
-      };
-      request.onerror = () => reject(new Error("network error"));
-      request.send(file);
+  async function uploadCsvFile(file: File): Promise<Record<string, unknown>> {
+    const response = await apiFetch(`${apiBase}/api/uploads/csv?filename=${encodeURIComponent(file.name)}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/octet-stream",
+      },
+      body: file,
     });
+    if (!response.ok) {
+      throw new Error(await response.text());
+    }
+    return await response.json();
   }
 
   async function repairSelectedFile(row: unknown) {
@@ -702,7 +709,7 @@ function App() {
       const previewLimit = positiveIntegerValue(form.max_examples, 20);
       let sourceRows = rowsForPath(viewerRows, path);
       if (sourceRows.length === 0 && viewerPath) {
-        const response = await fetch(`${apiBase}/api/jsonl?path=${encodeURIComponent(viewerPath)}&limit=${previewLimit}&offset=0&path_filter=${encodeURIComponent(path)}`);
+        const response = await apiFetch(`${apiBase}/api/jsonl?path=${encodeURIComponent(viewerPath)}&limit=${previewLimit}&offset=0&path_filter=${encodeURIComponent(path)}`);
         if (!response.ok) {
           setViewerRows([{ error: await response.text(), path }]);
           setViewerGroups([]);
@@ -795,7 +802,7 @@ function App() {
       setPreviewOpen(false);
       return;
     }
-    const groupsResponse = await fetch(`${apiBase}/api/jsonl/groups?path=${encodeURIComponent(path)}`);
+    const groupsResponse = await apiFetch(`${apiBase}/api/jsonl/groups?path=${encodeURIComponent(path)}`);
     const groupsPayload = groupsResponse.ok ? await groupsResponse.json() : { groups: [] };
     const groups = (groupsPayload.groups ?? []) as JsonlGroup[];
     if (groups.length > 0 && !pathFilter) {
@@ -813,7 +820,7 @@ function App() {
       return;
     }
     const filterQuery = pathFilter ? `&path_filter=${encodeURIComponent(pathFilter)}` : "";
-    const response = await fetch(`${apiBase}/api/jsonl?path=${encodeURIComponent(path)}&limit=200&offset=${offset}${filterQuery}`);
+    const response = await apiFetch(`${apiBase}/api/jsonl?path=${encodeURIComponent(path)}&limit=200&offset=${offset}${filterQuery}`);
     if (!response.ok) {
       setViewerRows([{ error: await response.text(), path }]);
       setViewerGroups(groups);
@@ -850,7 +857,7 @@ function App() {
       setPreviewOpen(false);
       return;
     }
-    const response = await fetch(`${apiBase}/api/report?path=${encodeURIComponent(path)}`);
+    const response = await apiFetch(`${apiBase}/api/report?path=${encodeURIComponent(path)}`);
     if (!response.ok) {
       setViewerRows([{ error: await response.text(), path }]);
       setSelectedAuditIndex(0);
@@ -885,7 +892,7 @@ function App() {
       setPreviewOpen(false);
       return;
     }
-    const response = await fetch(`${apiBase}/api/text?path=${encodeURIComponent(path)}&limit=200&offset=${offset}`);
+    const response = await apiFetch(`${apiBase}/api/text?path=${encodeURIComponent(path)}&limit=200&offset=${offset}`);
     if (!response.ok) {
       setViewerRows([{ error: await response.text(), path }]);
       setSelectedAuditIndex(0);
@@ -920,7 +927,7 @@ function App() {
       setPreviewOpen(false);
       return;
     }
-    const response = await fetch(`${apiBase}/api/csv?path=${encodeURIComponent(path)}&limit=200&offset=${offset}`);
+    const response = await apiFetch(`${apiBase}/api/csv?path=${encodeURIComponent(path)}&limit=200&offset=${offset}`);
     if (!response.ok) {
       setViewerRows([{ error: await response.text(), path }]);
       setSelectedAuditIndex(0);

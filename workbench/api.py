@@ -11,7 +11,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Literal
 
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -74,6 +74,23 @@ app.add_middleware(
 
 @app.middleware("http")
 async def add_private_network_access_header(request: Request, call_next):
+    origin = request.headers.get("origin", "")
+    if (
+        request.method == "OPTIONS"
+        and origin in allowed_origins()
+        and request.headers.get("access-control-request-private-network") == "true"
+    ):
+        return Response(
+            status_code=200,
+            headers={
+                "Access-Control-Allow-Origin": origin,
+                "Access-Control-Allow-Credentials": "true",
+                "Access-Control-Allow-Methods": request.headers.get("access-control-request-method", "GET,POST,OPTIONS"),
+                "Access-Control-Allow-Headers": request.headers.get("access-control-request-headers", "*"),
+                "Access-Control-Allow-Private-Network": "true",
+                "Vary": "Origin",
+            },
+        )
     response = await call_next(request)
     response.headers["Access-Control-Allow-Private-Network"] = "true"
     return response
