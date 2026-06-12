@@ -139,6 +139,7 @@ class RunRequest(BaseModel):
     log_all_changes: bool = False
     validate_after_repair: bool = True
     write_bom: bool = False
+    in_place: bool = False
 
 
 class DirectoryPickerRequest(BaseModel):
@@ -399,12 +400,12 @@ def ensure_engine() -> None:
 def build_engine_command(request: RunRequest, job_id: str) -> tuple[list[str], Path | None]:
     command = ["dotnet", str(engine_dll), request.command]
     output_base = resolve_output_base(request, job_id)
-    default_repair_output = default_single_repair_output(request, output_base)
+    default_repair_output = None if request.in_place else default_single_repair_output(request, output_base)
     if request.input_path:
         command.extend(["--input", request.input_path])
     if request.root_path:
         command.extend(["--root", request.root_path])
-    if request.output_path:
+    if request.output_path and not request.in_place:
         command.extend(["--output", request.output_path])
     elif default_repair_output:
         command.extend(["--output", str(default_repair_output)])
@@ -441,6 +442,8 @@ def build_engine_command(request: RunRequest, job_id: str) -> tuple[list[str], P
         command.append("--no-validate")
     if request.write_bom and request.command == "repair":
         command.append("--write-bom")
+    if request.in_place and request.command == "repair":
+        command.append("--in-place")
     return command, output_base
 
 
@@ -462,7 +465,7 @@ def default_single_repair_output(request: RunRequest, output_base: Path | None) 
 
 
 def validate_output_safety(request: RunRequest, command: list[str], output_base: Path | None) -> None:
-    if request.command == "repair" and request.input_path:
+    if request.command == "repair" and request.input_path and not request.in_place:
         input_path = resolve_for_compare(request.input_path)
         output_path = command_option_path(command, "--output")
         if output_path and output_path == input_path:
@@ -488,6 +491,11 @@ def writable_output_paths(request: RunRequest, command: list[str]) -> list[Path]
     if request.command == "repair":
         options.append("--change-log")
     paths: list[Path] = []
+    if request.command == "repair" and request.in_place:
+        if request.input_path:
+            paths.append(resolve_for_compare(request.input_path))
+        if request.root_path:
+            paths.append(resolve_for_compare(request.root_path))
     for option in options:
         path = command_option_path(command, option)
         if path:
@@ -768,17 +776,20 @@ public static class CsvRepairFolderDialog {
 [CsvRepairFolderDialog]::PickFolder($env:CSV_REPAIR_PICKER_TITLE, $env:CSV_REPAIR_PICKER_INITIAL)
 """
     startup_info = None
+    creation_flags = 0
     if os.name == "nt":
         startup_info = subprocess.STARTUPINFO()
         startup_info.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-        startup_info.wShowWindow = 1
+        startup_info.wShowWindow = 0
+        creation_flags = subprocess.CREATE_NO_WINDOW
     process = subprocess.run(
-        ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Normal", "-STA", "-Command", script],
+        ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-STA", "-Command", script],
         capture_output=True,
         text=True,
         encoding="utf-8",
         errors="replace",
         env=environment,
+        creationflags=creation_flags,
         startupinfo=startup_info,
         timeout=3600,
     )

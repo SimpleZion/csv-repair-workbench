@@ -130,6 +130,7 @@ type FormState = {
   log_all_changes: boolean;
   validate_after_repair: boolean;
   write_bom: boolean;
+  in_place: boolean;
 };
 
 const defaultForm: FormState = {
@@ -153,6 +154,7 @@ const defaultForm: FormState = {
   log_all_changes: false,
   validate_after_repair: true,
   write_bom: false,
+  in_place: false,
 };
 
 const messages = {
@@ -216,7 +218,7 @@ const messages = {
     repairDescription: "Repairs one CSV or a directory tree into new files and writes a full change log when enabled.",
     repairReads: "Input CSV for one-file repair, or all CSV files under Root directory for batch repair.",
     repairWrites: "Repaired CSV files, repair reports, change JSONL, progress JSONL, and validation results.",
-    repairImpact: "Does not overwrite source files. Writes repaired copies to Output file or Output directory.",
+    repairImpact: "Default mode writes repaired copies. If In-place overwrite is enabled, repaired files replace the source CSV after validation succeeds.",
     validateDescription: "Runs strict validation on one CSV and returns whether it is already parser-safe.",
     validateReads: "Input CSV only.",
     validateWrites: "No output files unless you run it through the workbench history.",
@@ -232,7 +234,7 @@ const messages = {
     inputCsvHelp: "Path to one CSV file. Use this for single-file scan, repair, validate, or benchmark.",
     rootDirectoryHelp: "Directory to scan recursively for CSV files. Use this for batch scan or batch repair.",
     outputFileHelp: "Target repaired CSV path for single-file repair. Leave blank for commands that do not need it.",
-    outputDirectoryHelp: "Folder that stores run artifacts. If blank, the workbench writes under outputs\\csv_repair_workbench; each run gets an isolated subfolder.",
+    outputDirectoryHelp: "Folder that stores run artifacts. If blank, the workbench writes under outputs\\csv_repair_workbench; each run gets an isolated subfolder. In-place repair still uses this folder for reports, logs, and summaries.",
     reportFileHelp: "Optional JSON report path for single-file repair.",
     issueLogFileHelp: "For scan, this is the optional path to write issue JSONL. For audit, this is an existing issue JSONL to summarize.",
     changeLogFileHelp: "For repair, this is the optional path to write change JSONL. For audit, this is an existing change JSONL to summarize.",
@@ -302,6 +304,7 @@ const messages = {
     logIssues: "Log issues",
     logChanges: "Log changes",
     writeBom: "Write BOM",
+    inPlaceOverwrite: "In-place overwrite",
     validate: "Validate",
     startRun: "Start run",
     status: "Status",
@@ -385,6 +388,7 @@ const messages = {
     logIssues: "记录问题",
     logChanges: "记录修改",
     writeBom: "写入 BOM",
+    inPlaceOverwrite: "原地覆盖",
     validate: "验证",
     startRun: "启动任务",
     status: "状态",
@@ -443,7 +447,7 @@ const messages = {
     repairDescription: "把异常 CSV 修复为新的 CSV 文件，可记录每个修改点并在修复后再次验证。",
     repairReads: "单文件修复读取“输入 CSV”；批量修复读取“根目录”下的所有 CSV。",
     repairWrites: "写入修复后的 CSV、修复报告、修改 JSONL、进度 JSONL 和验证结果。",
-    repairImpact: "不覆盖原始 CSV；修复结果写到“输出文件”或“输出目录”。",
+    repairImpact: "默认生成修复副本；启用“原地覆盖”后，修复文件会在验证通过后替换原始 CSV。",
     validateDescription: "对单个 CSV 做严格解析验证，判断它是否已经能被稳定读取。",
     validateReads: "只读取“输入 CSV”。",
     validateWrites: "不写业务产物，只保留工作台运行历史。",
@@ -459,7 +463,7 @@ const messages = {
     inputCsvHelp: "用于指定一个 CSV 文件路径。单文件扫描、修复、验证和性能测试都用这个字段。",
     rootDirectoryHelp: "用于指定批量任务的根目录，系统会递归查找其中的 CSV 文件。",
     outputFileHelp: "用于指定单文件 repair 的修复后 CSV 路径；批量任务不需要填。",
-    outputDirectoryHelp: "用于指定本次任务产物保存在哪个文件夹。不填时自动保存到工作区 outputs\\csv_repair_workbench；每次运行会自动创建独立子目录。",
+    outputDirectoryHelp: "用于指定本次任务产物保存在哪个文件夹。不填时自动保存到工作区 outputs\\csv_repair_workbench；每次运行会自动创建独立子目录。原地覆盖时仍会把报告、日志和汇总写到这里。",
     reportFileHelp: "用于指定单文件 repair 的 JSON 报告路径；不填也可以。",
     issueLogFileHelp: "scan 时用于指定问题 JSONL 的写入位置；audit 时用于指定已有问题 JSONL 的读取位置。",
     changeLogFileHelp: "repair 时用于指定修改 JSONL 的写入位置；audit 时用于指定已有修改 JSONL 的读取位置。",
@@ -631,6 +635,7 @@ function App() {
       log_all_changes: form.log_all_changes,
       validate_after_repair: form.validate_after_repair,
       write_bom: form.write_bom,
+      in_place: form.in_place,
       ...overrides,
     };
   }
@@ -852,6 +857,7 @@ function App() {
       log_all_issues: false,
       log_all_changes: true,
       validate_after_repair: true,
+      in_place: form.in_place,
       ...overrides,
     });
   }
@@ -1123,7 +1129,7 @@ function App() {
                 <FieldHelp>{text.rootDirectoryHelp}</FieldHelp>
               </label>
             )}
-            {fields.outputPath && (
+            {fields.outputPath && !form.in_place && (
               <label>
                 <LabelText label={text.outputFile} badge={text.optional} help={text.outputFileHelp} />
                 <input value={form.output_path} onChange={(event) => updateForm(setForm, "output_path", event.target.value)} placeholder={text.outputFileExample} />
@@ -1257,12 +1263,13 @@ function App() {
                     </label>
                   </>
                 )}
-                {(fields.logIssues || fields.logChanges || fields.validateAfterRepair || fields.writeBom) && (
+                {(fields.logIssues || fields.logChanges || fields.validateAfterRepair || fields.writeBom || fields.inPlace) && (
                   <div className="switch-row">
                     {fields.logIssues && <label><input type="checkbox" checked={form.log_all_issues} onChange={(event) => updateForm(setForm, "log_all_issues", event.target.checked)} /> {text.logIssues}</label>}
                     {fields.logChanges && <label><input type="checkbox" checked={form.log_all_changes} onChange={(event) => updateForm(setForm, "log_all_changes", event.target.checked)} /> {text.logChanges}</label>}
                     {fields.validateAfterRepair && <label><input type="checkbox" checked={form.validate_after_repair} onChange={(event) => updateForm(setForm, "validate_after_repair", event.target.checked)} /> {text.validate}</label>}
                     {fields.writeBom && <label><input type="checkbox" checked={form.write_bom} onChange={(event) => updateForm(setForm, "write_bom", event.target.checked)} /> {text.writeBom}</label>}
+                    {fields.inPlace && <label><input type="checkbox" checked={form.in_place} onChange={(event) => updateForm(setForm, "in_place", event.target.checked)} /> {text.inPlaceOverwrite}</label>}
                   </div>
                 )}
               </div>
@@ -2302,6 +2309,7 @@ function commandFields(command: Command) {
     logChanges: command === "repair",
     validateAfterRepair: command === "repair",
     writeBom: command === "repair",
+    inPlace: command === "repair",
   };
 }
 

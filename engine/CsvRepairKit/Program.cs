@@ -73,6 +73,7 @@ internal static class CsvShared
       --report PATH             JSON repair report path.
       --issue-log PATH          JSONL issue log path.
       --change-log PATH         JSONL repair-change log path.
+      --in-place                Replace each source CSV after a repaired temporary file validates.
       --exclude PATTERN         Exclude path glob; can be repeated.
       --exclude-dir PATTERN     Exclude directory glob or name; can be repeated.
       --workers N               File-level parallelism for directory mode.
@@ -266,7 +267,7 @@ internal static class BatchPaths
     {
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(path))!);
         using var writer = new StreamWriter(path, false, new UTF8Encoding(true));
-        writer.WriteLine("status,input_path,output_path,input_size_bytes,output_size_bytes,expected_columns,records_written_including_header,total_repair_change_count,column_mismatch_count,validation_status,elapsed_seconds");
+        writer.WriteLine("status,input_path,output_path,in_place,overwrote_input,input_size_bytes,output_size_bytes,expected_columns,records_written_including_header,total_repair_change_count,column_mismatch_count,validation_status,elapsed_seconds");
         foreach (var result in results)
         {
             writer.WriteLine(string.Join(",", new[]
@@ -274,6 +275,8 @@ internal static class BatchPaths
                 EscapeCsv(result.Status),
                 EscapeCsv(result.InputPath),
                 EscapeCsv(result.OutputPath),
+                result.InPlace ? "true" : "false",
+                result.OverwroteInput ? "true" : "false",
                 result.InputSizeBytes.ToString(CultureInfo.InvariantCulture),
                 result.OutputSizeBytes.ToString(CultureInfo.InvariantCulture),
                 result.ExpectedColumns?.ToString(CultureInfo.InvariantCulture) ?? "",
@@ -374,48 +377,123 @@ internal static class RepairCommand
         }
 
         RequireFile(options.InputPath, "--input");
-        if (string.IsNullOrWhiteSpace(options.OutputPath))
+        if (!options.InPlace && string.IsNullOrWhiteSpace(options.OutputPath))
         {
             throw new ArgumentException("--output is required for repair");
         }
 
         var stopwatch = Stopwatch.StartNew();
-        Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(options.OutputPath))!);
-        if (!string.IsNullOrWhiteSpace(options.ReportPath))
+        var effectiveOutputPath = options.InPlace
+            ? InPlaceRepairFiles.CreateTempPath(options.InputPath)
+            : Path.GetFullPath(options.OutputPath);
+        var singleRepairArtifactDirectory = ResolveSingleRepairArtifactDirectory(options);
+        var reportPath = ResolveSingleRepairReportPath(options, singleRepairArtifactDirectory);
+        Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(effectiveOutputPath))!);
+        if (!string.IsNullOrWhiteSpace(reportPath))
         {
-            Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(options.ReportPath))!);
+            Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(reportPath))!);
         }
         var changeLogPath = options.LogAllChanges
             ? !string.IsNullOrWhiteSpace(options.ChangeLogPath)
                 ? Path.GetFullPath(options.ChangeLogPath)
-                : Path.ChangeExtension(Path.GetFullPath(options.OutputPath), ".changes.jsonl")
+                : ResolveSingleRepairChangeLogPath(options, effectiveOutputPath, singleRepairArtifactDirectory)
             : "";
+        if (!string.IsNullOrWhiteSpace(changeLogPath))
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(changeLogPath))!);
+        }
         using var changeSink = options.LogAllChanges ? new JsonLineSink(changeLogPath) : null;
 
-        var repairResult = CsvRepairer.Repair(options, change => changeSink?.Write(change));
+        var fileOptions = options.InPlace
+            ? options.CloneForFile(options.InputPath, effectiveOutputPath, reportPath)
+            : options;
+
+        RepairResult repairResult;
+        try
+        {
+            repairResult = CsvRepairer.Repair(fileOptions, change => changeSink?.Write(change));
+        }
+        catch
+        {
+            if (options.InPlace)
+            {
+                InPlaceRepairFiles.DeleteIfExists(effectiveOutputPath);
+            }
+            throw;
+        }
         ValidationResult? validation = null;
         if (options.ValidateAfterRepair)
         {
-            validation = CsvValidator.Validate(options.OutputPath, options.MaxExamples);
+            validation = CsvValidator.Validate(effectiveOutputPath, options.MaxExamples);
         }
 
         repairResult.ElapsedSeconds = Math.Round(stopwatch.Elapsed.TotalSeconds, 3);
         repairResult.Validation = validation;
+        repairResult.InPlace = options.InPlace;
         repairResult.Status = validation is null
             ? repairResult.Status
             : validation.Status == "ok" && repairResult.ColumnMismatchCount == 0
                 ? "ok"
                 : "issue";
+        if (options.InPlace)
+        {
+            repairResult.OverwroteInput = repairResult.Status == "ok";
+            if (repairResult.OverwroteInput)
+            {
+                InPlaceRepairFiles.ReplaceOriginal(effectiveOutputPath, options.InputPath);
+                repairResult.OutputPath = Path.GetFullPath(options.InputPath);
+                repairResult.OutputSizeBytes = new FileInfo(options.InputPath).Length;
+            }
+            else
+            {
+                InPlaceRepairFiles.DeleteIfExists(effectiveOutputPath);
+            }
+        }
 
-        if (!string.IsNullOrWhiteSpace(options.ReportPath))
+        if (!string.IsNullOrWhiteSpace(reportPath))
         {
             File.WriteAllText(
-                options.ReportPath,
+                reportPath,
                 JsonSerializer.Serialize(repairResult, JsonOutput.Options) + Environment.NewLine,
                 new UTF8Encoding(false));
         }
 
         return new CommandResult(repairResult.Status == "ok" ? 0 : 1, repairResult);
+    }
+
+    private static string ResolveSingleRepairArtifactDirectory(Options options)
+    {
+        if (options.InPlace && !string.IsNullOrWhiteSpace(options.OutputDirectory))
+        {
+            return Path.Combine(BatchPaths.ResolveRunDirectory(options.OutputDirectory, "csv_repair"), "single_file");
+        }
+        return "";
+    }
+
+    private static string ResolveSingleRepairReportPath(Options options, string artifactDirectory)
+    {
+        if (!string.IsNullOrWhiteSpace(options.ReportPath))
+        {
+            return Path.GetFullPath(options.ReportPath);
+        }
+        if (!string.IsNullOrWhiteSpace(artifactDirectory))
+        {
+            var inputPath = Path.GetFullPath(options.InputPath);
+            var inputName = Path.GetFileNameWithoutExtension(inputPath);
+            return Path.Combine(artifactDirectory, $"{inputName}_repair_report.json");
+        }
+        return "";
+    }
+
+    private static string ResolveSingleRepairChangeLogPath(Options options, string effectiveOutputPath, string artifactDirectory)
+    {
+        if (!string.IsNullOrWhiteSpace(artifactDirectory))
+        {
+            var inputPath = Path.GetFullPath(options.InputPath);
+            var inputName = Path.GetFileNameWithoutExtension(inputPath);
+            return Path.Combine(artifactDirectory, $"{inputName}.changes.jsonl");
+        }
+        return Path.ChangeExtension(Path.GetFullPath(effectiveOutputPath), ".changes.jsonl");
     }
 }
 
@@ -555,6 +633,7 @@ internal static class BatchRepairCommand
             root = options.RootPath,
             csv_count = inputFiles.Count,
             workers = options.Workers,
+            in_place = options.InPlace,
             output_directory = outputDirectory,
             change_log_path = changeSink?.Path,
             exclusions = options.ExcludePatterns,
@@ -565,15 +644,30 @@ internal static class BatchRepairCommand
         Parallel.ForEach(inputFiles, parallelOptions, inputFile =>
         {
             var relativePath = Path.GetRelativePath(Path.GetFullPath(options.RootPath), Path.GetFullPath(inputFile));
-            var outputPath = Path.Combine(outputDirectory, relativePath);
-            var reportPath = Path.ChangeExtension(outputPath, ".repair_report.json");
+            var outputPath = options.InPlace
+                ? InPlaceRepairFiles.CreateTempPath(inputFile)
+                : Path.Combine(outputDirectory, relativePath);
+            var reportPath = Path.ChangeExtension(Path.Combine(outputDirectory, relativePath), ".repair_report.json");
             Directory.CreateDirectory(Path.GetDirectoryName(outputPath)!);
+            Directory.CreateDirectory(Path.GetDirectoryName(reportPath)!);
 
             var fileOptions = options.CloneForFile(inputFile, outputPath, reportPath);
-            var repairResult = CsvRepairer.Repair(fileOptions, change =>
+            RepairResult repairResult;
+            try
             {
-                changeSink?.Write(change);
-            });
+                repairResult = CsvRepairer.Repair(fileOptions, change =>
+                {
+                    changeSink?.Write(change);
+                });
+            }
+            catch
+            {
+                if (options.InPlace)
+                {
+                    InPlaceRepairFiles.DeleteIfExists(outputPath);
+                }
+                throw;
+            }
             ValidationResult? validation = null;
             if (options.ValidateAfterRepair)
             {
@@ -581,11 +675,26 @@ internal static class BatchRepairCommand
             }
 
             repairResult.Validation = validation;
+            repairResult.InPlace = options.InPlace;
             repairResult.Status = validation is null
                 ? repairResult.Status
                 : validation.Status == "ok" && repairResult.ColumnMismatchCount == 0
                     ? "ok"
                     : "issue";
+            if (options.InPlace)
+            {
+                repairResult.OverwroteInput = repairResult.Status == "ok";
+                if (repairResult.OverwroteInput)
+                {
+                    InPlaceRepairFiles.ReplaceOriginal(outputPath, inputFile);
+                    repairResult.OutputPath = Path.GetFullPath(inputFile);
+                    repairResult.OutputSizeBytes = new FileInfo(inputFile).Length;
+                }
+                else
+                {
+                    InPlaceRepairFiles.DeleteIfExists(outputPath);
+                }
+            }
             File.WriteAllText(reportPath, JsonSerializer.Serialize(repairResult, JsonOutput.Options) + Environment.NewLine, new UTF8Encoding(false));
 
             Interlocked.Increment(ref repairedCount);
@@ -792,7 +901,7 @@ internal static class CsvRepairer
         var result = new RepairResult
         {
             InputPath = Path.GetFullPath(options.InputPath),
-            OutputPath = Path.GetFullPath(options.OutputPath),
+            OutputPath = options.VisibleOutputPath,
             InputSizeBytes = inputInfo.Length,
             Status = "ok",
         };
@@ -845,7 +954,7 @@ internal static class CsvRepairer
 
         result.TotalRepairChangeCount++;
         var inputPath = Path.GetFullPath(options.InputPath);
-        var outputPath = Path.GetFullPath(options.OutputPath);
+        var outputPath = options.VisibleOutputPath;
         if (result.InputHadUtf8Bom)
         {
             onChange?.Invoke(new ChangeLogRecord
@@ -885,6 +994,52 @@ internal static class CsvRepairer
             RepairedContext = "UTF-8 BOM",
             Detail = "UTF-8 BOM was added because --write-bom was set",
         });
+    }
+}
+
+internal static class InPlaceRepairFiles
+{
+    public static string CreateTempPath(string inputPath)
+    {
+        var fullInputPath = Path.GetFullPath(inputPath);
+        var directory = Path.GetDirectoryName(fullInputPath) ?? Directory.GetCurrentDirectory();
+        var fileName = Path.GetFileName(fullInputPath);
+        return Path.Combine(directory, $".{fileName}.{Guid.NewGuid():N}.repair.tmp");
+    }
+
+    public static void ReplaceOriginal(string repairedTempPath, string originalPath)
+    {
+        var fullTempPath = Path.GetFullPath(repairedTempPath);
+        var fullOriginalPath = Path.GetFullPath(originalPath);
+        var originalAttributes = File.GetAttributes(fullOriginalPath);
+        try
+        {
+            File.Replace(fullTempPath, fullOriginalPath, null, ignoreMetadataErrors: true);
+        }
+        catch (PlatformNotSupportedException)
+        {
+            File.Move(fullTempPath, fullOriginalPath, overwrite: true);
+        }
+        catch (IOException)
+        {
+            File.Move(fullTempPath, fullOriginalPath, overwrite: true);
+        }
+        if (File.Exists(fullOriginalPath))
+        {
+            File.SetAttributes(fullOriginalPath, originalAttributes);
+        }
+    }
+
+    public static void DeleteIfExists(string path)
+    {
+        try
+        {
+            File.Delete(path);
+        }
+        catch
+        {
+            // Best-effort cleanup. The original file is never deleted here.
+        }
     }
 }
 
@@ -1325,7 +1480,7 @@ internal sealed class RepairParser
         onChange?.Invoke(new ChangeLogRecord
         {
             Path = Path.GetFullPath(options.InputPath),
-            OutputPath = Path.GetFullPath(options.OutputPath),
+            OutputPath = options.VisibleOutputPath,
             IssueType = issueType,
             RecordNumber = recordNumber,
             PhysicalLineNumber = physicalLineNumber,
@@ -1358,7 +1513,7 @@ internal sealed class RepairParser
         onChange?.Invoke(new ChangeLogRecord
         {
             Path = Path.GetFullPath(options.InputPath),
-            OutputPath = Path.GetFullPath(options.OutputPath),
+            OutputPath = options.VisibleOutputPath,
             IssueType = issueType,
             RecordNumber = recordNumber,
             PhysicalLineNumber = physicalLineNumberOverride ?? physicalLineNumber,
@@ -1798,6 +1953,7 @@ internal sealed class Options
     public bool LogAllChanges { get; private set; }
     public bool WriteBom { get; private set; }
     public bool ValidateAfterRepair { get; private set; } = true;
+    public bool InPlace { get; private set; }
     public bool ShowHelp { get; private set; }
 
     public static Options Parse(string[] args)
@@ -1878,6 +2034,9 @@ internal sealed class Options
                 case "--log-all-changes":
                     options.LogAllChanges = true;
                     break;
+                case "--in-place":
+                    options.InPlace = true;
+                    break;
                 case "--write-bom":
                     options.WriteBom = true;
                     break;
@@ -1916,9 +2075,13 @@ internal sealed class Options
             LogAllChanges = LogAllChanges,
             WriteBom = WriteBom,
             ValidateAfterRepair = ValidateAfterRepair,
+            InPlace = InPlace,
             ShowHelp = ShowHelp,
         };
     }
+
+    public string VisibleOutputPath => Path.GetFullPath(
+        InPlace ? InputPath : OutputPath);
 
     private static string NeedValue(string[] args, ref int index, string optionName)
     {
@@ -2023,6 +2186,8 @@ internal sealed class RepairResult
     public string Status { get; set; } = "ok";
     public string InputPath { get; set; } = "";
     public string OutputPath { get; set; } = "";
+    public bool InPlace { get; set; }
+    public bool OverwroteInput { get; set; }
     public long InputSizeBytes { get; set; }
     public long OutputSizeBytes { get; set; }
     public bool InputHadUtf8Bom { get; set; }
