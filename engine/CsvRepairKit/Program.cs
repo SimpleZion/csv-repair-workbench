@@ -47,6 +47,10 @@ internal static class CsvShared
     public const byte quoteByte = (byte)'"';
     public const byte carriageReturnByte = (byte)'\r';
     public const byte lineFeedByte = (byte)'\n';
+    private static readonly Encoding snippetEncoding = Encoding.GetEncoding(
+        "UTF-8",
+        EncoderFallback.ExceptionFallback,
+        new DecoderReplacementFallback(""));
 
     public static string HelpText() => """
     CsvRepairKit
@@ -103,13 +107,20 @@ internal static class CsvShared
             var data = new byte[length];
             using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
             stream.Seek(start, SeekOrigin.Begin);
-            _ = stream.Read(data, 0, data.Length);
-            return Encoding.UTF8.GetString(data).Replace("\r", "\\r").Replace("\n", "\\n");
+            var bytesRead = stream.Read(data, 0, data.Length);
+            return DecodeSnippetBytes(data.AsSpan(0, bytesRead));
         }
         catch (Exception error)
         {
             return $"<snippet_error {error.GetType().Name}: {error.Message}>";
         }
+    }
+
+    public static string DecodeSnippetBytes(ReadOnlySpan<byte> bytes)
+    {
+        return snippetEncoding.GetString(bytes)
+            .Replace("\r", "\\r", StringComparison.Ordinal)
+            .Replace("\n", "\\n", StringComparison.Ordinal);
     }
 
     public static void RequireFile(string path, string optionName)
@@ -2044,14 +2055,12 @@ internal sealed class BufferedByteReader : IDisposable
             }
             bytes.Add((byte)value);
         }
-        return Encoding.UTF8.GetString(bytes.ToArray()).Replace("\r", "\\r", StringComparison.Ordinal).Replace("\n", "\\n", StringComparison.Ordinal);
+        return DecodeSnippetBytes(bytes.ToArray());
     }
 
     public string GetBeforeContext(int radius = 120)
     {
-        return Encoding.UTF8.GetString(history.TakeLast(radius).ToArray())
-            .Replace("\r", "\\r", StringComparison.Ordinal)
-            .Replace("\n", "\\n", StringComparison.Ordinal);
+        return DecodeSnippetBytes(history.TakeLast(radius).ToArray());
     }
 
     public string GetAfterContext(int radius = 120)
@@ -2066,9 +2075,7 @@ internal sealed class BufferedByteReader : IDisposable
             }
             bytes.Add((byte)value);
         }
-        return Encoding.UTF8.GetString(bytes.ToArray())
-            .Replace("\r", "\\r", StringComparison.Ordinal)
-            .Replace("\n", "\\n", StringComparison.Ordinal);
+        return DecodeSnippetBytes(bytes.ToArray());
     }
 
     private int ReadRaw()

@@ -191,6 +191,12 @@ def valid_values(frame: pl.DataFrame, column: str, allowed_values: Iterable[obje
         raise AssertionError(f"{column} has invalid values: {sorted(invalid)!r}")
 
 
+def assert_no_replacement_character(path: Path) -> None:
+    text = path.read_text(encoding="utf-8")
+    if "\ufffd" in text:
+        raise AssertionError(f"replacement character found in {path}")
+
+
 def run_real_csv_regression(real_csv: Path) -> None:
     output_root.mkdir(parents=True, exist_ok=True)
     output_path = output_root / f"{real_csv.stem}_repaired_real.csv"
@@ -216,6 +222,7 @@ def run_real_csv_regression(real_csv: Path) -> None:
             "--log-all-changes",
         ]
     )
+    assert_no_replacement_character(report_path)
 
     row_count = 0
     mismatch_examples: list[tuple[int, int]] = []
