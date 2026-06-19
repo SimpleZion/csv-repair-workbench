@@ -1,0 +1,4 @@
+"A","B"
+"1","last column text is long enough and ends with a literal quote""
+""continuation line starts with a literal quote"
+"2","done"

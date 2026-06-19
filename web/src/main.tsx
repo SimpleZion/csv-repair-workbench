@@ -60,6 +60,8 @@ type RunPayload = {
   TotalChangeCount?: number;
   RepairedFileCount?: number;
   OutputDirectory?: string;
+  OutputPath?: string;
+  ReportPath?: string;
   ProgressPath?: string;
   SummaryCsvPath?: string;
   IssueLogPath?: string;
@@ -172,7 +174,7 @@ const messages = {
     required: "required",
     optional: "optional",
     scanHint: "Fill either Input CSV or Root directory. Root directory is for batch scan.",
-    repairHint: "Fill Input CSV for one file, or Root directory for batch repair. Output file is only needed for one-file repair.",
+    repairHint: "Fill Input CSV for one file, or Root directory for batch repair. Output file is optional and overrides the default _repaired path.",
     validateHint: "Fill Input CSV. Other output and logging fields are not used.",
     auditHint: "Fill an Issue log file, Change log file, or both. Output directory stores the audit summary.",
     benchmarkHint: "Fill Input CSV. Iterations controls repeated benchmark runs.",
@@ -234,8 +236,8 @@ const messages = {
     benchmarkImpact: "Does not overwrite source files. Used for performance testing.",
     inputCsvHelp: "Path to one CSV file. Use this for single-file scan, repair, validate, or benchmark.",
     rootDirectoryHelp: "Directory to scan recursively for CSV files. Use this for batch scan or batch repair.",
-    outputFileHelp: "Target repaired CSV path for single-file repair. Leave blank for commands that do not need it.",
-    outputDirectoryHelp: "Folder that stores run artifacts. If blank, the workbench writes under outputs\\csv_repair_workbench; each run gets an isolated subfolder. In-place repair still uses this folder for reports, logs, and summaries.",
+    outputFileHelp: "Target repaired CSV path for single-file repair. Leave blank to write beside the input CSV with a _repaired suffix.",
+    outputDirectoryHelp: "Folder that stores reports, logs, progress, and summaries. If blank, the workbench writes artifacts under outputs\\csv_repair_workbench; single-file repaired CSVs still default beside the input CSV.",
     reportFileHelp: "Optional JSON report path for single-file repair.",
     issueLogFileHelp: "For scan, this is the optional path to write issue JSONL. For audit, this is an existing issue JSONL to summarize.",
     changeLogFileHelp: "For repair, this is the optional path to write change JSONL. For audit, this is an existing change JSONL to summarize.",
@@ -249,7 +251,7 @@ const messages = {
     excludeDirectoriesHelp: "One pattern per line. Skips matching subdirectories during recursive batch scan/repair.",
     inputCsvExample: "samples\\malformed.csv",
     rootDirectoryExample: "<your-csv-folder>",
-    outputFileExample: "outputs\\csv_repair_workbench\\malformed_repaired.csv",
+    outputFileExample: "C:\\data\\malformed_repaired.csv",
     outputDirectoryExample: "outputs\\csv_repair_workbench",
     reportFileExample: "outputs\\csv_repair_workbench\\repair_report.json",
     issueLogFileExample: "outputs\\csv_repair_workbench\\issues.jsonl",
@@ -266,6 +268,10 @@ const messages = {
     viewProgressHint: "Shows processed files, task status, byte volume and interruption point.",
     viewSummary: "Engine summary",
     viewSummaryHint: "Displays the complete JSON result returned by the repair engine.",
+    repairedCsv: "Repaired CSV",
+    repairedCsvHint: "Preview the repaired CSV output written by this repair run.",
+    repairReport: "Repair report",
+    repairReportHint: "Open the JSON repair report with validation status and example fixes.",
     noRunArtifacts: "This run has no previewable artifacts yet.",
     details: "Details",
     preview: "Preview",
@@ -314,6 +320,8 @@ const messages = {
     issueFiles: "Issue files",
     changes: "Changes",
     outputDir: "Output directory",
+    repairedCsvArtifact: "Repaired CSV",
+    repairReportArtifact: "Repair report",
     summaryJson: "Summary JSON",
     summaryCsv: "File summary table",
     summaryCsvHint: "Tabular view of each CSV file's scan or repair result.",
@@ -358,7 +366,7 @@ const messages = {
     required: "必填",
     optional: "可选",
     scanHint: "填写“输入 CSV”或“根目录”即可；根目录用于批量扫描。",
-    repairHint: "单文件修复填“输入 CSV”，批量修复填“根目录”；“输出文件”只用于单文件修复。",
+    repairHint: "单文件修复填“输入 CSV”，批量修复填“根目录”；“输出文件”为可选项，用于覆盖默认 _repaired 路径。",
     validateHint: "只需要填写“输入 CSV”；输出和日志字段不会被使用。",
     auditHint: "填写“问题日志文件”或“修改日志文件”，也可以两个都填；输出目录用于保存审计汇总。",
     benchmarkHint: "填写“输入 CSV”；迭代次数用于重复跑性能测试。",
@@ -398,6 +406,8 @@ const messages = {
     issueFiles: "问题文件",
     changes: "修改点",
     outputDir: "输出目录",
+    repairedCsvArtifact: "修复后 CSV",
+    repairReportArtifact: "修复报告",
     summaryJson: "汇总 JSON",
     summaryCsv: "文件汇总表",
     summaryCsvHint: "以表格方式呈现每个 CSV 的扫描或修复结果。",
@@ -463,8 +473,8 @@ const messages = {
     benchmarkImpact: "不覆盖原始 CSV，只用于性能测试。",
     inputCsvHelp: "用于指定一个 CSV 文件路径。单文件扫描、修复、验证和性能测试都用这个字段。",
     rootDirectoryHelp: "用于指定批量任务的根目录，系统会递归查找其中的 CSV 文件。",
-    outputFileHelp: "用于指定单文件 repair 的修复后 CSV 路径；批量任务不需要填。",
-    outputDirectoryHelp: "用于指定本次任务产物保存在哪个文件夹。不填时自动保存到工作区 outputs\\csv_repair_workbench；每次运行会自动创建独立子目录。原地覆盖时仍会把报告、日志和汇总写到这里。",
+    outputFileHelp: "用于指定单文件 repair 的修复后 CSV 路径。留空时默认写在输入 CSV 同目录，文件名加 _repaired 后缀。",
+    outputDirectoryHelp: "用于指定报告、日志、进度和汇总保存在哪个文件夹。不填时自动保存到工作区 outputs\\csv_repair_workbench；单文件修复后的 CSV 默认仍写在输入 CSV 同目录。",
     reportFileHelp: "用于指定单文件 repair 的 JSON 报告路径；不填也可以。",
     issueLogFileHelp: "scan 时用于指定问题 JSONL 的写入位置；audit 时用于指定已有问题 JSONL 的读取位置。",
     changeLogFileHelp: "repair 时用于指定修改 JSONL 的写入位置；audit 时用于指定已有修改 JSONL 的读取位置。",
@@ -478,7 +488,7 @@ const messages = {
     excludeDirectoriesHelp: "用于指定递归批量任务中要跳过的子目录，一行一个。",
     inputCsvExample: "samples\\malformed.csv",
     rootDirectoryExample: "<your-csv-folder>",
-    outputFileExample: "outputs\\csv_repair_workbench\\malformed_repaired.csv",
+    outputFileExample: "C:\\data\\malformed_repaired.csv",
     outputDirectoryExample: "outputs\\csv_repair_workbench",
     reportFileExample: "outputs\\csv_repair_workbench\\repair_report.json",
     issueLogFileExample: "outputs\\csv_repair_workbench\\issues.jsonl",
@@ -495,6 +505,10 @@ const messages = {
     viewProgressHint: "展示已处理文件数、任务状态、字节量及中断位置。",
     viewSummary: "引擎结果摘要",
     viewSummaryHint: "展示修复引擎返回的完整 JSON 结果。",
+    repairedCsv: "修复后 CSV",
+    repairedCsvHint: "预览本次 repair 写出的修复版 CSV。",
+    repairReport: "修复报告",
+    repairReportHint: "打开包含验证状态和示例修改点的 JSON 修复报告。",
     noRunArtifacts: "当前任务还没有可预览产物。",
     details: "详情",
     preview: "预览",
@@ -1502,6 +1516,20 @@ function RunResultActions({
   const changeBadge = typeof changeCount === "number" ? String(changeCount) : undefined;
   const actions = [
     {
+      title: text.repairedCsv,
+      description: text.repairedCsvHint,
+      icon: <Database size={18} />,
+      disabled: !payload?.OutputPath,
+      onClick: () => onLoadCsv(payload?.OutputPath),
+    },
+    {
+      title: text.repairReport,
+      description: text.repairReportHint,
+      icon: <FileSearch size={18} />,
+      disabled: !payload?.ReportPath,
+      onClick: () => onLoadReport(payload?.ReportPath),
+    },
+    {
       title: text.viewIssues,
       description: text.viewIssuesHint,
       badge: issueBadge,
@@ -1589,6 +1617,8 @@ function ArtifactPanel({
   return (
     <div className="artifact-grid">
       <Artifact title={text.outputDir} value={payload?.OutputDirectory} icon={<Database size={18} />} text={text} />
+      <Artifact title={text.repairedCsvArtifact} value={payload?.OutputPath} icon={<Database size={18} />} onOpen={() => onLoadCsv(payload?.OutputPath)} text={text} />
+      <Artifact title={text.repairReportArtifact} value={payload?.ReportPath} icon={<FileSearch size={18} />} onOpen={() => onLoadReport(payload?.ReportPath)} text={text} />
       <Artifact title={text.summaryJson} value={payload?.SummaryJsonPath} icon={<FileSearch size={18} />} onOpen={() => onLoadReport(payload?.SummaryJsonPath)} text={text} />
       <Artifact title={text.summaryCsv} value={payload?.SummaryCsvPath} icon={<FileSearch size={18} />} onOpen={() => onLoadCsv(payload?.SummaryCsvPath)} text={text} />
       <Artifact title={text.progressJsonl} value={progressPath} icon={<Gauge size={18} />} onOpen={() => onLoadJsonl(progressPath)} text={text} />
@@ -1951,13 +1981,21 @@ function projectRepairPreviewRow(row: unknown) {
 
 function projectRepairContext(issueType: string, originalContext: string) {
   const loweredIssueType = issueType.toLowerCase();
-  if (loweredIssueType.includes("quote")) {
-    const repairedContext = originalContext.replaceAll('"', '""');
+  if (loweredIssueType === "unescaped_quote_inside_quoted_field" || loweredIssueType === "quote_inside_unquoted_field") {
+    const repairedContext = originalContext.replace('"', '""');
     return {
       originalText: '"',
       repairedText: '""',
       repairedContext,
-      detail: "quote characters are projected to be escaped as doubled quotes",
+      detail: "projected preview; exact context is available after running repair with a change log",
+    };
+  }
+  if (loweredIssueType.includes("quote")) {
+    return {
+      originalText: '"',
+      repairedText: "",
+      repairedContext: originalContext,
+      detail: "exact repair preview for this quote pattern requires a repair change log",
     };
   }
   return {

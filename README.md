@@ -11,7 +11,7 @@ The project has three parts:
 ## Features
 
 - Scan one CSV or a whole directory recursively.
-- Repair one CSV, selected issue files, or a full scan scope without overwriting source files.
+- Repair one CSV, selected issue files, or a full scan scope without overwriting source files. Single-file repair writes `<name>_repaired.csv` beside the input CSV when `--output` is omitted.
 - Keep issue logs, change logs, summary CSV files, progress JSONL and JSON reports.
 - Preview repair changes before formal repair from scan rows, with highlighted original and projected repaired tokens.
 - Upload a CSV through the UI instead of manually typing a path.
@@ -58,7 +58,7 @@ dotnet .\engine\CsvRepairKit\bin\Release\net8.0\CsvRepairKit.dll scan --input .\
 Repair one CSV:
 
 ```powershell
-dotnet .\engine\CsvRepairKit\bin\Release\net8.0\CsvRepairKit.dll repair --input .\samples\malformed.csv --output .\outputs\malformed_repaired.csv --log-all-changes
+dotnet .\engine\CsvRepairKit\bin\Release\net8.0\CsvRepairKit.dll repair --input .\samples\malformed.csv --log-all-changes
 ```
 
 Validate a repaired CSV:

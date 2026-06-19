@@ -379,13 +379,17 @@ internal static class RepairCommand
         RequireFile(options.InputPath, "--input");
         if (!options.InPlace && string.IsNullOrWhiteSpace(options.OutputPath))
         {
-            throw new ArgumentException("--output is required for repair");
+            options.UseDefaultSingleRepairOutputPath();
         }
 
         var stopwatch = Stopwatch.StartNew();
         var effectiveOutputPath = options.InPlace
             ? InPlaceRepairFiles.CreateTempPath(options.InputPath)
             : Path.GetFullPath(options.OutputPath);
+        if (options.OutputPathWasDefault && File.Exists(effectiveOutputPath))
+        {
+            throw new IOException($"default repair output already exists: {effectiveOutputPath}. Pass --output to choose a different file or use --in-place intentionally.");
+        }
         var singleRepairArtifactDirectory = ResolveSingleRepairArtifactDirectory(options);
         var reportPath = ResolveSingleRepairReportPath(options, singleRepairArtifactDirectory);
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(effectiveOutputPath))!);
@@ -401,6 +405,10 @@ internal static class RepairCommand
         if (!string.IsNullOrWhiteSpace(changeLogPath))
         {
             Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(changeLogPath))!);
+            if (string.IsNullOrWhiteSpace(options.ChangeLogPath) && File.Exists(changeLogPath))
+            {
+                throw new IOException($"default repair change log already exists: {changeLogPath}. Pass --change-log to choose a different file.");
+            }
         }
         using var changeSink = options.LogAllChanges ? new JsonLineSink(changeLogPath) : null;
 
@@ -430,6 +438,8 @@ internal static class RepairCommand
         repairResult.ElapsedSeconds = Math.Round(stopwatch.Elapsed.TotalSeconds, 3);
         repairResult.Validation = validation;
         repairResult.InPlace = options.InPlace;
+        repairResult.ReportPath = reportPath;
+        repairResult.ChangeLogPath = changeLogPath;
         repairResult.Status = validation is null
             ? repairResult.Status
             : validation.Status == "ok" && repairResult.ColumnMismatchCount == 0
@@ -1196,6 +1206,53 @@ internal sealed class RepairParser
         var next = reader.Peek(0);
         if (next == quoteByte)
         {
+            var afterEscapedQuote = reader.Peek(1);
+            if (afterEscapedQuote == delimiterByte && ShouldCloseEscapedTerminalQuoteBeforeDelimiter())
+            {
+                var issueRecordNumber = recordNumber;
+                var issuePhysicalLineNumber = physicalLineNumber;
+                var issueColumnNumber = CurrentColumnNumber;
+                _ = reader.Read();
+                currentField.WriteByte(quoteByte);
+                _ = reader.Read();
+                EndField();
+                state = CsvParseState.FieldStart;
+                result.RepairedQuoteBeforeDelimiterCount++;
+                AddRepairChange(
+                    "escaped_terminal_quote_before_delimiter",
+                    offset,
+                    "terminal quote before delimiter was kept as data and the field was closed",
+                    recordNumberOverride: issueRecordNumber,
+                    physicalLineNumberOverride: issuePhysicalLineNumber,
+                    columnNumberOverride: issueColumnNumber);
+                return;
+            }
+            if ((afterEscapedQuote == carriageReturnByte || afterEscapedQuote == lineFeedByte) && ShouldCloseEscapedTerminalQuoteBeforeNewline())
+            {
+                var issueRecordNumber = recordNumber;
+                var issuePhysicalLineNumber = physicalLineNumber;
+                var issueColumnNumber = CurrentColumnNumber;
+                _ = reader.Read();
+                currentField.WriteByte(quoteByte);
+                var newlineOffset = reader.NextOffset;
+                var newline = reader.Read();
+                if (newline >= 0)
+                {
+                    var lineEnding = ConsumeLineEnding((byte)newline);
+                    AddRecordLineEndingChangeIfNeeded(newlineOffset, lineEnding);
+                }
+                EndRecord(offset);
+                state = CsvParseState.FieldStart;
+                result.RepairedQuoteBeforeNewlineCount++;
+                AddRepairChange(
+                    "escaped_terminal_quote_before_newline",
+                    offset,
+                    "terminal quote before newline was kept as data and the record was closed",
+                    recordNumberOverride: issueRecordNumber,
+                    physicalLineNumberOverride: issuePhysicalLineNumber,
+                    columnNumberOverride: issueColumnNumber);
+                return;
+            }
             _ = reader.Read();
             currentField.WriteByte(quoteByte);
             return;
@@ -1264,10 +1321,135 @@ internal sealed class RepairParser
         if (IsAllQuotedActive())
         {
             var afterDelimiter = reader.Peek(1);
-            return afterDelimiter == quoteByte;
+            if (afterDelimiter != quoteByte)
+            {
+                return false;
+            }
+
+            return !ShouldKeepDelimiterQuoteInsideLongTextField();
         }
 
         return true;
+    }
+
+    private bool ShouldKeepDelimiterQuoteInsideLongTextField()
+    {
+        return currentField.Length >= 32 && ClosingHereWouldExceedExpectedColumnsBeforePhysicalLineEnd();
+    }
+
+    private bool ClosingHereWouldExceedExpectedColumnsBeforePhysicalLineEnd()
+    {
+        if (expectedColumns is null)
+        {
+            return false;
+        }
+
+        var expectedSeparatorsRemaining = expectedColumns.Value - CurrentColumnNumber;
+        if (expectedSeparatorsRemaining < 0)
+        {
+            return true;
+        }
+
+        var separatorsRemaining = CountAllQuotedSeparatorsBeforePhysicalLineEnd(expectedSeparatorsRemaining + 1);
+        return separatorsRemaining > expectedSeparatorsRemaining;
+    }
+
+    private int CountAllQuotedSeparatorsBeforePhysicalLineEnd(int stopAfter, int startIndex = 0)
+    {
+        var separators = 0;
+        for (var index = startIndex; ; index++)
+        {
+            var value = reader.Peek(index);
+            if (value < 0 || value == carriageReturnByte || value == lineFeedByte)
+            {
+                return separators;
+            }
+
+            var isCurrentSeparator = index == startIndex && value == delimiterByte && reader.Peek(index + 1) == quoteByte;
+            var isLaterSeparator = index > startIndex && value == delimiterByte && reader.Peek(index - 1) == quoteByte && reader.Peek(index + 1) == quoteByte;
+            if (isCurrentSeparator || isLaterSeparator)
+            {
+                separators++;
+                if (separators > stopAfter)
+                {
+                    return separators;
+                }
+            }
+        }
+    }
+
+    private bool ShouldCloseEscapedTerminalQuoteBeforeDelimiter()
+    {
+        if (expectedColumns is not null && CurrentColumnNumber >= expectedColumns.Value)
+        {
+            return false;
+        }
+
+        if (IsAllQuotedActive())
+        {
+            var afterDelimiter = reader.Peek(2);
+            if (afterDelimiter != quoteByte)
+            {
+                return false;
+            }
+
+            return !ClosingHereWouldExceedExpectedColumnsBeforePhysicalLineEnd();
+        }
+
+        return true;
+    }
+
+    private bool ShouldCloseEscapedTerminalQuoteBeforeNewline()
+    {
+        if (expectedColumns is not null && CurrentColumnNumber != expectedColumns.Value)
+        {
+            return false;
+        }
+
+        if (!IsAllQuotedActive())
+        {
+            return true;
+        }
+
+        return NextPhysicalLineAfterEscapedTerminalQuoteLooksLikeRecord();
+    }
+
+    private bool NextPhysicalLineAfterEscapedTerminalQuoteLooksLikeRecord()
+    {
+        var startIndex = IndexAfterEscapedTerminalQuoteNewline();
+        var first = reader.Peek(startIndex);
+        if (first < 0)
+        {
+            return true;
+        }
+
+        if (expectedColumns is null)
+        {
+            return first == quoteByte;
+        }
+
+        return PhysicalLineLooksLikeAllQuotedRecord(startIndex, expectedColumns.Value);
+    }
+
+    private int IndexAfterEscapedTerminalQuoteNewline()
+    {
+        var first = reader.Peek(1);
+        if (first == carriageReturnByte && reader.Peek(2) == lineFeedByte)
+        {
+            return 3;
+        }
+        return 2;
+    }
+
+    private bool PhysicalLineLooksLikeAllQuotedRecord(int startIndex, int columnCount)
+    {
+        if (reader.Peek(startIndex) != quoteByte)
+        {
+            return false;
+        }
+
+        var separators = CountAllQuotedSeparatorsBeforePhysicalLineEnd(columnCount, startIndex);
+        return separators == columnCount - 1;
     }
 
     private bool ShouldCloseRecordBeforeNewline()
@@ -1455,9 +1637,18 @@ internal sealed class RepairParser
         });
     }
 
-    private void AddRepairChange(string issueType, long offset, string detail)
+    private void AddRepairChange(
+        string issueType,
+        long offset,
+        string detail,
+        long? recordNumberOverride = null,
+        long? physicalLineNumberOverride = null,
+        int? columnNumberOverride = null)
     {
         result.TotalRepairChangeCount++;
+        var changeRecordNumber = recordNumberOverride ?? recordNumber;
+        var changePhysicalLineNumber = physicalLineNumberOverride ?? physicalLineNumber;
+        var changeColumnNumber = columnNumberOverride ?? CurrentColumnNumber;
         var context = reader.GetContext();
         var beforeContext = reader.GetBeforeContext();
         var afterContext = reader.GetAfterContext();
@@ -1468,10 +1659,10 @@ internal sealed class RepairParser
             result.Issues.Add(new RepairIssue
             {
                 IssueType = issueType,
-                RecordNumber = recordNumber,
-                PhysicalLineNumber = physicalLineNumber,
+                RecordNumber = changeRecordNumber,
+                PhysicalLineNumber = changePhysicalLineNumber,
                 ByteOffset = Math.Max(0, offset),
-                ColumnNumber = CurrentColumnNumber,
+                ColumnNumber = changeColumnNumber,
                 Detail = detail,
                 Snippet = context,
             });
@@ -1482,10 +1673,10 @@ internal sealed class RepairParser
             Path = Path.GetFullPath(options.InputPath),
             OutputPath = options.VisibleOutputPath,
             IssueType = issueType,
-            RecordNumber = recordNumber,
-            PhysicalLineNumber = physicalLineNumber,
+            RecordNumber = changeRecordNumber,
+            PhysicalLineNumber = changePhysicalLineNumber,
             ByteOffset = Math.Max(0, offset),
-            ColumnNumber = CurrentColumnNumber,
+            ColumnNumber = changeColumnNumber,
             OriginalText = "\"",
             RepairedText = "\"\"",
             OriginalBytesHex = "22",
@@ -1955,6 +2146,7 @@ internal sealed class Options
     public bool ValidateAfterRepair { get; private set; } = true;
     public bool InPlace { get; private set; }
     public bool ShowHelp { get; private set; }
+    public bool OutputPathWasDefault { get; private set; }
 
     public static Options Parse(string[] args)
     {
@@ -2080,6 +2272,16 @@ internal sealed class Options
         };
     }
 
+    public void UseDefaultSingleRepairOutputPath()
+    {
+        var fullInputPath = Path.GetFullPath(InputPath);
+        var directory = Path.GetDirectoryName(fullInputPath) ?? Environment.CurrentDirectory;
+        var extension = Path.GetExtension(fullInputPath);
+        var outputFileName = $"{Path.GetFileNameWithoutExtension(fullInputPath)}_repaired{extension}";
+        OutputPath = Path.Combine(directory, outputFileName);
+        OutputPathWasDefault = true;
+    }
+
     public string VisibleOutputPath => Path.GetFullPath(
         InPlace ? InputPath : OutputPath);
 
@@ -2186,6 +2388,8 @@ internal sealed class RepairResult
     public string Status { get; set; } = "ok";
     public string InputPath { get; set; } = "";
     public string OutputPath { get; set; } = "";
+    public string ReportPath { get; set; } = "";
+    public string ChangeLogPath { get; set; } = "";
     public bool InPlace { get; set; }
     public bool OverwroteInput { get; set; }
     public long InputSizeBytes { get; set; }

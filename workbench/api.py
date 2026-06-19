@@ -85,6 +85,19 @@ allowed_read_roots = (
     workbench_output_dir.resolve(),
 )
 
+
+def hidden_subprocess_kwargs() -> dict[str, Any]:
+    if os.name != "nt":
+        return {}
+    startup_info = subprocess.STARTUPINFO()
+    startup_info.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    startup_info.wShowWindow = 0
+    return {
+        "creationflags": subprocess.CREATE_NO_WINDOW,
+        "startupinfo": startup_info,
+    }
+
+
 app = FastAPI(title="CsvRepairWorkbench API", version="0.1.0")
 app.add_middleware(
     CORSMiddleware,
@@ -405,27 +418,26 @@ def ensure_engine() -> None:
         text=True,
         encoding="utf-8",
         errors="replace",
+        **hidden_subprocess_kwargs(),
     )
 
 
 def build_engine_command(request: RunRequest, job_id: str) -> tuple[list[str], Path | None]:
     command = ["dotnet", str(engine_dll), request.command]
     output_base = resolve_output_base(request, job_id)
-    default_repair_output = None if request.in_place else default_single_repair_output(request, output_base)
+    default_repair_report = default_single_repair_report(request, output_base)
     if request.input_path:
         command.extend(["--input", request.input_path])
     if request.root_path:
         command.extend(["--root", request.root_path])
     if request.output_path and not request.in_place:
         command.extend(["--output", request.output_path])
-    elif default_repair_output:
-        command.extend(["--output", str(default_repair_output)])
     if output_base:
         command.extend(["--output-dir", str(output_base)])
     if request.report_path and request.command == "repair":
         command.extend(["--report", request.report_path])
-    elif default_repair_output:
-        command.extend(["--report", str(default_repair_output.with_name(f"{default_repair_output.stem}_report.json"))])
+    elif default_repair_report:
+        command.extend(["--report", str(default_repair_report)])
     if request.issue_log_path and request.command in {"scan", "audit"}:
         command.extend(["--issue-log", request.issue_log_path])
     if request.change_log_path and request.command in {"repair", "audit"}:
@@ -458,6 +470,53 @@ def build_engine_command(request: RunRequest, job_id: str) -> tuple[list[str], P
     return command, output_base
 
 
+def command_option_value(command: list[str], option: str) -> str | None:
+    if option not in command:
+        return None
+    index = command.index(option)
+    if index + 1 >= len(command):
+        return None
+    return command[index + 1]
+
+
+def enrich_payload_from_command(command: list[str], payload: Any) -> Any:
+    if not isinstance(payload, dict):
+        payload = {}
+    enriched = dict(payload)
+    output_path = command_option_value(command, "--output") or default_single_repair_output_from_command(command)
+    report_path = command_option_value(command, "--report")
+    change_log_path = command_option_value(command, "--change-log")
+    if output_path and not enriched.get("OutputPath"):
+        enriched["OutputPath"] = str(resolve_for_compare(output_path))
+    if report_path and not enriched.get("ReportPath"):
+        enriched["ReportPath"] = str(resolve_for_compare(report_path))
+    if not change_log_path and "--log-all-changes" in command and output_path:
+        change_log_path = str(Path(output_path).with_suffix(".changes.jsonl"))
+    if change_log_path and not enriched.get("ChangeLogPath"):
+        enriched["ChangeLogPath"] = str(resolve_for_compare(change_log_path))
+    return enriched
+
+
+def default_single_repair_output_from_command(command: list[str]) -> str | None:
+    if "repair" not in command or "--root" in command or "--output" in command or "--in-place" in command:
+        return None
+    input_path = command_option_value(command, "--input")
+    if not input_path:
+        return None
+    input_file = resolve_for_compare(input_path)
+    suffix = input_file.suffix or ".csv"
+    return str(input_file.with_name(f"{input_file.stem}_repaired{suffix}"))
+
+
+def default_repair_change_log_from_command(command: list[str]) -> Path | None:
+    if "--log-all-changes" not in command or "--change-log" in command:
+        return None
+    output_path = command_option_value(command, "--output") or default_single_repair_output_from_command(command)
+    if not output_path:
+        return None
+    return Path(output_path).with_suffix(".changes.jsonl").resolve()
+
+
 def resolve_output_base(request: RunRequest, job_id: str) -> Path | None:
     if request.command not in {"scan", "repair", "audit", "benchmark"}:
         return None
@@ -467,18 +526,27 @@ def resolve_output_base(request: RunRequest, job_id: str) -> Path | None:
     return base_directory / "runs" / job_id
 
 
-def default_single_repair_output(request: RunRequest, output_base: Path | None) -> Path | None:
+def default_single_repair_output(request: RunRequest) -> Path | None:
+    if request.command != "repair" or request.root_path or not request.input_path or request.in_place or request.output_path:
+        return None
+    input_path = Path(request.input_path)
+    if not input_path.is_absolute():
+        input_path = workspace_root / input_path
+    suffix = input_path.suffix or ".csv"
+    return input_path.with_name(f"{input_path.stem}_repaired{suffix}")
+
+
+def default_single_repair_report(request: RunRequest, output_base: Path | None) -> Path | None:
     if request.command != "repair" or request.root_path or not request.input_path or not output_base:
         return None
     input_path = Path(request.input_path)
-    suffix = input_path.suffix or ".csv"
-    return output_base / "single_file" / f"{input_path.stem}_repaired{suffix}"
+    return output_base / "single_file" / f"{input_path.stem}_repair_report.json"
 
 
 def validate_output_safety(request: RunRequest, command: list[str], output_base: Path | None) -> None:
     if request.command == "repair" and request.input_path and not request.in_place:
         input_path = resolve_for_compare(request.input_path)
-        output_path = command_option_path(command, "--output")
+        output_path = command_option_path(command, "--output") or default_single_repair_output(request)
         if output_path and output_path == input_path:
             raise HTTPException(status_code=400, detail="repair output path must not be the same as the input CSV")
     protected_options = ["--output", "--report"]
@@ -486,13 +554,17 @@ def validate_output_safety(request: RunRequest, command: list[str], output_base:
         protected_options.append("--issue-log")
     if request.command == "repair":
         protected_options.append("--change-log")
-    for option in protected_options:
-        path = command_option_path(command, option)
+    protected_paths = [path for option in protected_options if (path := command_option_path(command, option))]
+    if default_output_path := default_single_repair_output(request):
+        protected_paths.append(default_output_path)
+    if default_change_log_path := default_repair_change_log_from_command(command):
+        protected_paths.append(default_change_log_path)
+    for path in protected_paths:
         if not path or not path.exists():
             continue
         if output_base and is_path_inside(path, output_base.resolve()):
             continue
-        raise HTTPException(status_code=400, detail=f"{option} target already exists; choose a new path to avoid overwriting files")
+        raise HTTPException(status_code=400, detail=f"{path} already exists; choose a new path to avoid overwriting files")
 
 
 def writable_output_paths(request: RunRequest, command: list[str]) -> list[Path]:
@@ -507,6 +579,10 @@ def writable_output_paths(request: RunRequest, command: list[str]) -> list[Path]
             paths.append(resolve_for_compare(request.input_path))
         if request.root_path:
             paths.append(resolve_for_compare(request.root_path))
+    if default_output_path := default_single_repair_output(request):
+        paths.append(default_output_path)
+    if default_change_log_path := default_repair_change_log_from_command(command):
+        paths.append(default_change_log_path)
     for option in options:
         path = command_option_path(command, option)
         if path:
@@ -887,9 +963,10 @@ def run_engine_job(job_id: str) -> None:
             encoding="utf-8",
             errors="replace",
             capture_output=True,
+            **hidden_subprocess_kwargs(),
         )
         elapsed = round(time.perf_counter() - started, 3)
-        payload = parse_engine_payload(process.stdout)
+        payload = enrich_payload_from_command(command, parse_engine_payload(process.stdout))
         status = "ok" if process.returncode == 0 else "issue"
         update_job(
             job_id,
@@ -925,6 +1002,10 @@ def parse_engine_payload(stdout: str) -> Any:
 
 def public_job(job: dict[str, Any]) -> dict[str, Any]:
     visible = dict(job)
+    visible["payload"] = enrich_payload_from_command(
+        list(visible.get("command") or []),
+        visible.get("payload"),
+    )
     visible["progress"] = read_job_progress(visible)
     if len(str(visible.get("stdout", ""))) > 8000:
         visible["stdout"] = str(visible["stdout"])[:8000] + "\n...<truncated>"
@@ -1055,6 +1136,7 @@ def is_known_job_artifact(path: Path) -> bool:
         "SummaryCsvPath",
         "IssueLogPath",
         "ChangeLogPath",
+        "ReportPath",
         "OutputPath",
         "SummaryPath",
     }
@@ -1065,7 +1147,10 @@ def is_known_job_artifact(path: Path) -> bool:
         base_value = job.get("workbench_output_base")
         if base_value and is_path_inside(path, Path(str(base_value)).resolve()):
             return True
-        payload = job.get("payload") if isinstance(job.get("payload"), dict) else {}
+        payload = enrich_payload_from_command(
+            list(job.get("command") or []),
+            job.get("payload") if isinstance(job.get("payload"), dict) else {},
+        )
         for key in artifact_keys:
             value = payload.get(key) if payload else None
             if value and path == Path(str(value)).resolve():
