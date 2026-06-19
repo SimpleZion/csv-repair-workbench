@@ -126,6 +126,19 @@ def run_sample_regressions() -> None:
             ["2", "done"],
         ],
     )
+
+    missing_payload = repair_sample("missing_trailing_fields_malformed.csv", "missing_trailing_fields_repaired.csv")
+    assert_rows(
+        Path(str(missing_payload["OutputPath"])),
+        [
+            ["A", "B", "C"],
+            ["1", "2", ""],
+            ["3", "4", ""],
+            ["5", "6", "7"],
+        ],
+    )
+    if missing_payload["PaddedMissingTrailingFieldCount"] != 2:
+        raise AssertionError("missing trailing fields were not counted")
     run_default_output_protection_regression()
 
 

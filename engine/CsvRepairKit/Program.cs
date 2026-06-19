@@ -1287,7 +1287,8 @@ internal sealed class RepairParser
 
         if (next == carriageReturnByte || next == lineFeedByte)
         {
-            if (ShouldCloseRecordBeforeNewline())
+            var shouldPadMissingTrailingFields = ShouldPadMissingTrailingFieldsBeforeNewline();
+            if (shouldPadMissingTrailingFields || ShouldCloseRecordBeforeNewline())
             {
                 var newlineOffset = reader.NextOffset;
                 var newline = reader.Read();
@@ -1296,7 +1297,7 @@ internal sealed class RepairParser
                     var lineEnding = ConsumeLineEnding((byte)newline);
                     AddRecordLineEndingChangeIfNeeded(newlineOffset, lineEnding);
                 }
-                EndRecord(offset);
+                EndRecord(offset, padMissingTrailingFields: shouldPadMissingTrailingFields);
                 state = CsvParseState.FieldStart;
                 return;
             }
@@ -1309,6 +1310,13 @@ internal sealed class RepairParser
 
         if (next < 0)
         {
+            if (ShouldPadMissingTrailingFieldsAtEndOfFile())
+            {
+                EndRecord(offset, outputAddsMissingLineEnding: true, padMissingTrailingFields: true);
+                state = CsvParseState.FieldStart;
+                return;
+            }
+
             if (expectedColumns is null || CurrentColumnNumber == expectedColumns)
             {
                 EndRecord(offset, outputAddsMissingLineEnding: true);
@@ -1479,14 +1487,48 @@ internal sealed class RepairParser
         return afterNewline < 0 || afterNewline == quoteByte;
     }
 
+    private bool ShouldPadMissingTrailingFieldsBeforeNewline()
+    {
+        if (expectedColumns is null || CurrentColumnNumber >= expectedColumns.Value || !IsAllQuotedActive())
+        {
+            return false;
+        }
+
+        var startIndex = IndexAfterCurrentNewline();
+        var first = reader.Peek(startIndex);
+        if (first < 0)
+        {
+            return true;
+        }
+        if (first != quoteByte)
+        {
+            return false;
+        }
+
+        var separators = CountAllQuotedSeparatorsBeforePhysicalLineEnd(expectedColumns.Value, startIndex);
+        return separators == expectedColumns.Value - 1 || separators == CurrentColumnNumber - 1;
+    }
+
+    private bool ShouldPadMissingTrailingFieldsAtEndOfFile()
+    {
+        return expectedColumns is not null
+            && CurrentColumnNumber < expectedColumns.Value
+            && IsAllQuotedActive();
+    }
+
     private int PeekAfterCurrentNewline()
+    {
+        return reader.Peek(IndexAfterCurrentNewline());
+    }
+
+    private int IndexAfterCurrentNewline()
     {
         var first = reader.Peek(0);
         if (first == carriageReturnByte && reader.Peek(1) == lineFeedByte)
         {
-            return reader.Peek(2);
+            return 2;
         }
-        return reader.Peek(1);
+        return 1;
     }
 
     private bool IsAllQuotedActive()
@@ -1509,7 +1551,7 @@ internal sealed class RepairParser
         currentFieldStartedQuoted = false;
     }
 
-    private void EndRecord(long offset, bool outputAddsMissingLineEnding = false)
+    private void EndRecord(long offset, bool outputAddsMissingLineEnding = false, bool padMissingTrailingFields = false)
     {
         EndField();
 
@@ -1530,6 +1572,10 @@ internal sealed class RepairParser
             autoAllQuoted = fieldStartedQuoted.Count == fields.Count && fieldStartedQuoted.All(value => value);
             result.AutoAllQuoted = autoAllQuoted;
             headerFinished = true;
+        }
+        else if (padMissingTrailingFields && expectedColumns is not null && fields.Count < expectedColumns.Value)
+        {
+            PadMissingTrailingFields(offset, expectedColumns.Value - fields.Count);
         }
         else if (expectedColumns is not null && fields.Count != expectedColumns.Value)
         {
@@ -1560,6 +1606,27 @@ internal sealed class RepairParser
         result.RecordsWrittenIncludingHeader++;
         recordNumber++;
         ResetRecord();
+    }
+
+    private void PadMissingTrailingFields(long offset, int missingFieldCount)
+    {
+        result.PaddedMissingTrailingFieldCount += missingFieldCount;
+        AddStructuralChange(
+            "missing_trailing_fields_padded",
+            offset,
+            "",
+            string.Join("", Enumerable.Repeat(",\"\"", missingFieldCount)),
+            "",
+            string.Join(" ", Enumerable.Repeat("2C 22 22", missingFieldCount)),
+            reader.GetContext(),
+            reader.GetContext(),
+            $"record ended with {missingFieldCount} missing trailing field(s); empty fields were appended",
+            columnNumberOverride: fields.Count + 1);
+        for (var index = 0; index < missingFieldCount; index++)
+        {
+            fields.Add(Array.Empty<byte>());
+            fieldStartedQuoted.Add(true);
+        }
     }
 
     private void ResetRecord()
@@ -2410,6 +2477,7 @@ internal sealed class RepairResult
     public long RepairedQuoteBeforeDelimiterCount { get; set; }
     public long RepairedQuoteBeforeNewlineCount { get; set; }
     public long RepairedQuoteInsideUnquotedFieldCount { get; set; }
+    public long PaddedMissingTrailingFieldCount { get; set; }
     public long TotalRepairChangeCount { get; set; }
     public long UnterminatedQuotedFieldCount { get; set; }
     public long EmbeddedNewlineCount { get; set; }
