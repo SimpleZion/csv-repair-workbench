@@ -1,21 +1,31 @@
+param(
+  [switch]$SkipBuild,
+  [switch]$OpenBrowser
+)
+
 $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $repoRoot
 
-dotnet build .\engine\CsvRepairKit\CsvRepairKit.csproj -c Release
-if (Test-Path ".\web\package.json") {
-  Push-Location ".\web"
-  if (-not (Test-Path ".\node_modules")) {
-    npm install
+if (-not $SkipBuild) {
+  dotnet build .\engine\CsvRepairKit\CsvRepairKit.csproj -c Release
+  if (Test-Path ".\web\package.json") {
+    Push-Location ".\web"
+    if (-not (Test-Path ".\node_modules")) {
+      npm install
+    }
+    npm run build
+    Pop-Location
   }
-  npm run build
-  Pop-Location
 }
 
 $port = 8787
 $existingListener = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
 if ($existingListener) {
   Write-Output "CsvRepairWorkbench API is already running at http://127.0.0.1:$port/"
+  if ($OpenBrowser) {
+    Start-Process "http://127.0.0.1:$port/"
+  }
   exit 0
 }
 
@@ -67,6 +77,9 @@ if ($started) {
   Write-Output "CsvRepairWorkbench API started in background at http://127.0.0.1:$port/"
   Write-Output "Logs: $logDirectory"
   Write-Output "ProcessId: $($process.Id)"
+  if ($OpenBrowser) {
+    Start-Process "http://127.0.0.1:$port/"
+  }
   exit 0
 }
 

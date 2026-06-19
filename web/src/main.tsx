@@ -23,6 +23,7 @@ import "./styles.css";
 const apiBase = window.localStorage.getItem("csvRepairApiBase") || "http://127.0.0.1:8787";
 const githubUrl = "https://github.com/SimpleZion/csv-repair-workbench";
 const localWorkbenchUrl = new URL("/", apiBase).toString();
+const localWorkbenchProtocolUrl = "csvrepair://open";
 const formStorageKey = "csvRepairWorkbenchForm";
 const formSchemaVersionKey = "csvRepairWorkbenchFormVersion";
 const currentFormSchemaVersion = "2";
@@ -584,6 +585,15 @@ function App() {
     setActiveTab(tab);
   }
 
+  function openLocalWorkbench() {
+    window.location.href = localWorkbenchProtocolUrl;
+    window.setTimeout(() => {
+      if (document.visibilityState === "visible") {
+        window.location.href = localWorkbenchUrl;
+      }
+    }, 1800);
+  }
+
   async function refreshRuns() {
     try {
       const response = await apiFetch(`${apiBase}/api/runs`);
@@ -1073,7 +1083,7 @@ function App() {
               <span>{apiConnectionError}</span>
             </div>
             <div className="api-warning-actions">
-              <button type="button" className="primary" onClick={() => { window.location.href = localWorkbenchUrl; }}>{text.openLocalWorkbench}</button>
+              <button type="button" className="primary" onClick={openLocalWorkbench}>{text.openLocalWorkbench}</button>
               <button type="button" onClick={() => void refreshRuns()}>{text.reconnectLocalApi}</button>
             </div>
           </section>
